@@ -239,6 +239,7 @@ models/*_predictions.csv
 models/*_metadata.json
 models/*_model_card.json
 models/*_manifest.json
+models/*_artifact_inventory.csv
 
 # Legacy project files kept locally only
 ad_click_pipeline_components.py

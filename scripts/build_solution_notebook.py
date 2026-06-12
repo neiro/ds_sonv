@@ -77,6 +77,8 @@ cells = [
         r'''
         from __future__ import annotations
 
+        import hashlib
+        import importlib
         import json
         import platform
         import sys
@@ -138,6 +140,8 @@ cells = [
         DATA_DIR = PROJECT_ROOT / "data" / "raw"
         MODELS_DIR = PROJECT_ROOT / "models"
         REPORTS_DIR = PROJECT_ROOT / "reports"
+        COMPONENT_MODULE_NAME = "bike_demand_pipeline_components"
+        COMPONENT_MODULE_PATH = PROJECT_ROOT / f"{COMPONENT_MODULE_NAME}.py"
         MODELS_DIR.mkdir(exist_ok=True)
         REPORTS_DIR.mkdir(exist_ok=True)
 
@@ -986,6 +990,9 @@ cells = [
         model_artifact_path = MODELS_DIR / "bike_demand_model.joblib"
         metadata_path = MODELS_DIR / "bike_demand_model_metadata.json"
         predictions_path = MODELS_DIR / "bike_demand_test_predictions.csv"
+        model_card_path = MODELS_DIR / "bike_demand_model_card.json"
+        manifest_path = MODELS_DIR / "bike_demand_artifact_manifest.json"
+        artifact_inventory_path = MODELS_DIR / "bike_demand_artifact_inventory.csv"
 
         joblib.dump(final_pipeline, model_artifact_path)
 
@@ -995,30 +1002,206 @@ cells = [
         predictions_frame["residual"] = y_test.values - final_test_predictions
         predictions_frame.to_csv(predictions_path, index=False)
 
+        def file_sha256(path: Path) -> str:
+            digest = hashlib.sha256()
+            with path.open("rb") as file:
+                for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+
+        required_component_names = [
+            "BikeFeatureEngineer",
+            "BASE_NUMERIC_FEATURES",
+            "CATEGORICAL_FEATURES",
+            "TIME_FEATURES",
+            "BASE_FEATURES",
+            "ENGINEERED_FEATURES",
+            "NUMERIC_WITH_ENGINEERED",
+            "MODEL_FEATURES_AFTER_ENGINEERING",
+        ]
+        component_module = importlib.import_module(COMPONENT_MODULE_NAME)
+        component_symbol_check = pd.DataFrame(
+            [
+                {"required_name": name, "present": hasattr(component_module, name)}
+                for name in required_component_names
+            ]
+        )
+        component_symbols_ok = bool(component_symbol_check["present"].all())
+        assert component_symbols_ok, "Feature engineering component module is incomplete"
+
+        component_source_sha256 = file_sha256(COMPONENT_MODULE_PATH)
+
+        baseline_test_metrics = final_results.query(
+            "model == 'company_linear_baseline' and split == 'test'"
+        ).iloc[0].to_dict()
+        final_test_metrics = final_results.query(
+            "model == @best_model_name and split == 'test'"
+        ).iloc[0].to_dict()
+
+        model_card = {
+            "project": "bike_demand_regression",
+            "business_goal": "forecast hourly bike rental demand for operational planning in BikeSochi",
+            "target": TARGET,
+            "primary_metric": "RMSE",
+            "secondary_metrics": ["MAE", "R2", "negative_predictions"],
+            "selected_model": best_model_name,
+            "selected_params": final_params,
+            "test_quality": final_test_metrics,
+            "baseline_test_quality": baseline_test_metrics,
+            "rmse_improvement_pct_vs_baseline": float(rmse_improvement_pct),
+            "training_protocol": {
+                "model_selection": f"{CV_SPLITS}-fold CV on train only",
+                "test_usage": "one final evaluation after model selection",
+                "random_state": RANDOM_STATE,
+                "optuna_trials": {"knn": N_TRIALS_KNN, "decision_tree": N_TRIALS_TREE},
+            },
+            "input_contract": {
+                "required_columns": X_train.columns.tolist(),
+                "target_column": TARGET,
+                "row_grain": "one row = one hour of bike rental observations",
+                "not_required_at_inference": [TARGET],
+            },
+            "feature_engineering_contract": {
+                "module": COMPONENT_MODULE_NAME,
+                "source_path": str(COMPONENT_MODULE_PATH.relative_to(PROJECT_ROOT)),
+                "source_sha256": component_source_sha256,
+                "required_names": required_component_names,
+            },
+            "known_limitations": [
+                "test sample is from the same source distribution as train, not a future out-of-time period",
+                "the model should be revalidated before use in unusual weather, holidays, or new operating regimes",
+                "zero-demand functioning-day periods and non-functioning-day periods require separate monitoring",
+            ],
+            "monitoring_recommendations": [
+                "RMSE, MAE, R2 and negative prediction count on fresh labeled batches",
+                "share of zero-demand hours and non-functioning-day rows",
+                "distribution drift for temperature, humidity, rainfall, snowfall and time-period features",
+                "prediction error by season, hour, holiday and functioning_day",
+            ],
+        }
+
+        component_manifest = {
+            "component_module": COMPONENT_MODULE_NAME,
+            "component_source_path": str(COMPONENT_MODULE_PATH),
+            "component_source_sha256": component_source_sha256,
+            "required_component_names": required_component_names,
+            "component_symbols_ok": component_symbols_ok,
+            "pipeline_steps": [name for name, _ in final_pipeline.steps],
+            "preprocessor_transformers": [
+                name for name, _, _ in final_pipeline.named_steps["preprocessor"].transformers
+            ],
+            "model_class": type(final_pipeline.named_steps["model"]).__name__,
+            "model_params": final_params,
+        }
+
         metadata = {
             "project": "bike_demand_regression",
             "random_state": RANDOM_STATE,
             "cv_splits": CV_SPLITS,
             "selected_model": best_model_name,
             "selected_params": final_params,
-            "baseline_test_metrics": final_results.query("model == 'company_linear_baseline' and split == 'test'").iloc[0].to_dict(),
-            "final_test_metrics": final_results.query("model == @best_model_name and split == 'test'").iloc[0].to_dict(),
+            "baseline_test_metrics": baseline_test_metrics,
+            "final_test_metrics": final_test_metrics,
             "rmse_improvement_pct_vs_baseline": rmse_improvement_pct,
             "train_shape": train.shape,
             "test_shape": test.shape,
             "input_columns": X_train.columns.tolist(),
             "engineered_features": ENGINEERED_FEATURES,
+            "component_module": COMPONENT_MODULE_NAME,
+            "component_source_sha256": component_source_sha256,
+            "required_component_names": required_component_names,
             "versions": versions.to_dict(orient="records"),
             "artifact_paths": {
                 "model": str(model_artifact_path),
                 "metadata": str(metadata_path),
                 "test_predictions": str(predictions_path),
+                "model_card": str(model_card_path),
+                "manifest": str(manifest_path),
+                "artifact_inventory": str(artifact_inventory_path),
+                "component_source_module": str(COMPONENT_MODULE_PATH),
                 "baseline": str(baseline_path),
             },
         }
 
         with metadata_path.open("w", encoding="utf-8") as file:
             json.dump(metadata, file, ensure_ascii=False, indent=2, default=str)
+        with model_card_path.open("w", encoding="utf-8") as file:
+            json.dump(model_card, file, ensure_ascii=False, indent=2, default=str)
+        with manifest_path.open("w", encoding="utf-8") as file:
+            json.dump(component_manifest, file, ensure_ascii=False, indent=2, default=str)
+
+        production_contract = pd.DataFrame(
+            [
+                {
+                    "contract_area": "input_schema",
+                    "requirement": "inference data must contain the same raw feature columns as train",
+                    "implementation": f"{len(X_train.columns)} input columns are listed in model_card['input_contract']",
+                },
+                {
+                    "contract_area": "feature_engineering_code",
+                    "requirement": "saved model must be paired with all custom feature engineering code",
+                    "implementation": f"{COMPONENT_MODULE_NAME}.py is tracked; sha256={component_source_sha256[:12]}...",
+                },
+                {
+                    "contract_area": "reproducibility",
+                    "requirement": "artifact predictions after reload must match notebook predictions",
+                    "implementation": "joblib.load is executed below and compared with np.allclose",
+                },
+                {
+                    "contract_area": "monitoring",
+                    "requirement": "production use requires fresh labeled checks and drift monitoring",
+                    "implementation": "model card contains metric, segment and feature-drift monitoring recommendations",
+                },
+            ]
+        )
+
+        artifact_inventory = pd.DataFrame(
+            [
+                {
+                    "artifact": "model_pipeline",
+                    "path": str(model_artifact_path.relative_to(PROJECT_ROOT)),
+                    "exists": model_artifact_path.exists(),
+                    "purpose": "full sklearn pipeline with feature engineering, preprocessing and model",
+                },
+                {
+                    "artifact": "metadata",
+                    "path": str(metadata_path.relative_to(PROJECT_ROOT)),
+                    "exists": metadata_path.exists(),
+                    "purpose": "run metrics, selected params, package versions and artifact paths",
+                },
+                {
+                    "artifact": "model_card",
+                    "path": str(model_card_path.relative_to(PROJECT_ROOT)),
+                    "exists": model_card_path.exists(),
+                    "purpose": "business goal, quality, input contract, limits and monitoring",
+                },
+                {
+                    "artifact": "component_manifest",
+                    "path": str(manifest_path.relative_to(PROJECT_ROOT)),
+                    "exists": manifest_path.exists(),
+                    "purpose": "custom component names, module checksum and pipeline structure",
+                },
+                {
+                    "artifact": "test_predictions",
+                    "path": str(predictions_path.relative_to(PROJECT_ROOT)),
+                    "exists": predictions_path.exists(),
+                    "purpose": "row-level final test predictions and residuals",
+                },
+                {
+                    "artifact": "component_source_module",
+                    "path": str(COMPONENT_MODULE_PATH.relative_to(PROJECT_ROOT)),
+                    "exists": COMPONENT_MODULE_PATH.exists(),
+                    "purpose": "Python code required to load and run the saved pipeline",
+                },
+                {
+                    "artifact": "baseline_pipeline",
+                    "path": str(baseline_path.relative_to(PROJECT_ROOT)),
+                    "exists": baseline_path.exists(),
+                    "purpose": "company baseline used for test comparison",
+                },
+            ]
+        )
+        artifact_inventory.to_csv(artifact_inventory_path, index=False)
 
         reloaded_pipeline = joblib.load(model_artifact_path)
         reloaded_predictions = reloaded_pipeline.predict(X_test)
@@ -1026,13 +1209,38 @@ cells = [
             "same_predictions_after_reload": bool(np.allclose(final_test_predictions, reloaded_predictions)),
             "max_abs_prediction_diff": float(np.max(np.abs(final_test_predictions - reloaded_predictions))),
         }
+        artifact_check = pd.DataFrame(
+            [
+                {
+                    "check": "component module contains required names",
+                    "status": "OK" if component_symbols_ok else "FAIL",
+                    "detail": f"{component_symbol_check['present'].sum()} of {len(required_component_names)} names found",
+                },
+                {
+                    "check": "all listed artifacts exist",
+                    "status": "OK" if bool(artifact_inventory["exists"].all()) else "FAIL",
+                    "detail": f"{artifact_inventory['exists'].sum()} of {len(artifact_inventory)} artifacts found",
+                },
+                {
+                    "check": "predictions match after joblib reload",
+                    "status": "OK" if reload_check["same_predictions_after_reload"] else "FAIL",
+                    "detail": f"max_abs_prediction_diff={reload_check['max_abs_prediction_diff']:.10f}",
+                },
+            ]
+        )
+
+        display(production_contract)
+        display(artifact_inventory)
+        display(component_symbol_check)
+        display(artifact_check)
         display(pd.DataFrame([reload_check]))
         assert reload_check["same_predictions_after_reload"], "Reloaded model predictions differ"
+        assert artifact_inventory["exists"].all(), "Some declared artifacts were not saved"
         '''
     ),
     md(
         """
-        **Вывод этапа 8:** сохранен не только алгоритм, а полный рабочий pipeline: feature engineering, preprocessors и модель. После `joblib.load()` предсказания совпадают, значит артефакт можно передавать дальше без скрытой зависимости от состояния ноутбука.
+        **Вывод этапа 8:** сохранен не только алгоритм, а полный рабочий pipeline: feature engineering, preprocessors и модель. К нему привязаны metadata, model card, manifest компонентов, test predictions и inventory артефактов. Кастомный transformer вынесен в импортируемый модуль `bike_demand_pipeline_components.py`, его обязательные имена и checksum зафиксированы. После `joblib.load()` предсказания совпадают, значит артефакт можно передавать дальше без скрытой зависимости от состояния ноутбука.
 
         Test predictions сохранены только как отчетный артефакт финальной оценки.
         """
