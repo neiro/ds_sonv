@@ -1,4 +1,4 @@
-# ТЗ: BikeSochi/BikeSouth bike rental demand regression
+# ТЗ: BikeSouth bike rental demand regression
 
 ## Цель
 
