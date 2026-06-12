@@ -1,0 +1,11 @@
+numpy==2.4.3
+pandas==3.0.2
+scipy==1.17.1
+matplotlib==3.10.8
+seaborn==0.13.2
+scikit-learn==1.6.1
+joblib==1.5.3
+optuna==4.9.0
+ipykernel==7.2.0
+nbformat==5.10.4
+nbclient==0.10.4
