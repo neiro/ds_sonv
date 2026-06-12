@@ -24,11 +24,11 @@ cells = [
         <a id="author-solution"></a>
         # Авторское решение: прогнозирование спроса на велопрокат BikeSochi
 
-        Ниже я оформляю решение как воспроизводимое ML-исследование: от проверки исходных файлов и baseline-модели до подбора нелинейных моделей, финального тестирования и сохранения рабочего pipeline.
+        Для проката велосипедов ошибка прогноза - это не абстрактный скоринг. Завышенный спрос ведет к лишней подаче велосипедов, перегруженным точкам и неэффективным сменам персонала; заниженный спрос - к пустым стойкам в часы пика, потерянным поездкам и ухудшению клиентского опыта. Поэтому модель здесь нужна как инструмент операционного планирования: заранее понять, где и когда спрос будет высоким, а где ресурсы можно держать экономнее.
 
-        **Цель:** выбрать модель, которая лучше предоставленной линейной регрессии прогнозирует почасовой спрос `Rented Bike Count`.
+        **Цель:** выбрать модель, которая лучше предоставленной линейной регрессии прогнозирует почасовой спрос `Rented Bike Count` и дает реалистичные неотрицательные прогнозы, пригодные для планирования парка и смен.
 
-        **Основная метрика:** `RMSE`, потому что именно ее нужно минимизировать в задаче. Дополнительно считаю `MAE` и `R2`: первая показывает среднюю ошибку в велосипедах, вторая - долю объясненной вариации спроса.
+        **Основная метрика:** `RMSE`, потому что крупные промахи в пиковые часы для проката особенно дороги. Дополнительно считаю `MAE` и `R2`: `MAE` показывает типичную ошибку в велосипедах в час, а `R2` помогает понять, насколько модель объясняет изменчивость спроса относительно простого среднего.
 
         **Ключевое ограничение:** `ds_s14_test_data.csv` не используется для подбора гиперпараметров и выбора модели. Новые модели выбираются только по 5-fold CV на `ds_s14_train_data.csv`; test применяется один раз в конце.
         """
@@ -55,7 +55,7 @@ cells = [
         <a id="methodology"></a>
         ## Методологическая рамка
 
-        В этой задаче легко получить внешне хороший результат и при этом испортить честность оценки. Поэтому заранее фиксирую правила эксперимента.
+        В этой задаче легко получить внешне хороший результат и при этом испортить честность оценки. Для бизнеса это опасно: модель с завышенной метрикой быстро приведет к неверному распределению велосипедов и доверие к аналитике будет потеряно после первых пиковых дней. Поэтому заранее фиксирую правила эксперимента.
 
         - Все обучаемые преобразования (`imputer`, `scaler`, `encoder`, модель) живут внутри `Pipeline`.
         - Финальная test-выборка не участвует в Optuna, выборе модели или выборе признаков.
@@ -63,6 +63,7 @@ cells = [
         - В Optuna минимизируется RMSE. Так как `sklearn` для regression scoring возвращает отрицательные значения, в objective используется `-scores["test_rmse"].mean()`.
         - Baseline компании оценивается отдельно как предоставленная модель. Его test-метрики нужны для итогового сравнения, но не для настройки новых моделей.
         - Графики используются не декоративно: каждый блок EDA должен дать решение для предобработки, признаков или интерпретации.
+        - Финальная рекомендация должна отвечать на операционные вопросы: насколько ошибка меньше baseline, исчезли ли невозможные отрицательные прогнозы, какие факторы мониторить и почему модель нельзя запускать без проверки на свежем периоде.
         """
     ),
     md(
@@ -222,6 +223,76 @@ cells = [
         ]
         BASE_FEATURES = BASE_NUMERIC_FEATURES + CATEGORICAL_FEATURES + TIME_FEATURES
 
+        FEATURE_DESCRIPTIONS_RU = {
+            "temperature": "температура воздуха",
+            "humidity": "влажность воздуха",
+            "wind_speed_ms": "скорость ветра",
+            "visibility_10m": "видимость",
+            "dew_point_temperature": "температура точки росы",
+            "solar_radiation_mjm2": "солнечная радиация",
+            "rainfallmm": "количество осадков, дождь",
+            "snowfall_cm": "количество снега",
+            "seasons_Spring": "весенний сезон",
+            "seasons_Summer": "летний сезон",
+            "seasons_Winter": "зимний сезон",
+            "holiday_No Holiday": "не праздничный день",
+            "functioning_day_Yes": "прокат работает",
+            "time_period_evening": "вечерний период",
+            "time_period_late_evening": "поздний вечер",
+            "time_period_morning": "утренний период",
+            "time_period_night": "ночной период",
+            "time_period_daytime": "дневной период",
+            "rainfall_flag": "наличие дождя",
+            "snowfall_flag": "наличие снега",
+            "dew_point_gap": "разница температуры и точки росы",
+            "comfort_temperature": "комфортный диапазон температуры",
+            "low_visibility_flag": "низкая видимость",
+            "temperature_x_humidity": "взаимодействие температуры и влажности",
+            "temperature_x_solar": "взаимодействие температуры и солнечной радиации",
+        }
+
+        PARAMETER_DESCRIPTIONS_RU = {
+            "n_neighbors": "число соседей",
+            "weights": "веса соседей",
+            "p": "метрика Минковского",
+            "leaf_size": "размер листа поиска",
+            "max_depth": "максимальная глубина",
+            "min_samples_split": "минимум объектов для split",
+            "min_samples_leaf": "минимум объектов в листе",
+            "max_features": "число признаков для split",
+            "ccp_alpha": "сила pruning",
+            "random_state": "seed",
+            "strategy": "стратегия dummy",
+        }
+
+
+        def feature_label_for_reader(feature: str) -> tuple[str, str, str]:
+            technical = feature.replace("num__", "").replace("cat__", "")
+            description = FEATURE_DESCRIPTIONS_RU.get(technical, technical.replace("_", " "))
+            plot_label = f"{technical}\n{description}" if description != technical else technical
+            return technical, description, plot_label
+
+
+        def short_params_for_plot(model_name: str, params: Dict[str, Any]) -> str:
+            if not params:
+                return "strategy=mean (среднее)"
+            if model_name == "decision_tree_optuna":
+                keys = ["max_depth", "min_samples_leaf", "min_samples_split"]
+            elif model_name == "knn_optuna":
+                keys = ["n_neighbors", "weights", "p"]
+            else:
+                keys = list(params)[:3]
+            parts = []
+            for key in keys:
+                if key in params:
+                    parts.append(f"{key}={params[key]} ({PARAMETER_DESCRIPTIONS_RU.get(key, key)})")
+            return "\n".join(parts)
+
+
+        def add_bar_labels(ax: plt.Axes, fmt: str) -> None:
+            for container in ax.containers:
+                ax.bar_label(container, fmt=fmt, padding=3, fontsize=9)
+
 
         def read_csv_with_fallback(filename: str) -> pd.DataFrame:
             candidates = [DATA_DIR / filename, Path("/datasets") / filename]
@@ -259,6 +330,19 @@ cells = [
         display(data_overview)
         display(train.head())
 
+        raw_feature_set = set(BASE_FEATURES)
+        feature_dictionary = pd.DataFrame(
+            [
+                {
+                    "technical_name": technical_name,
+                    "description_ru": description,
+                    "role": "исходный признак" if technical_name in raw_feature_set else "инженерный или encoded-признак",
+                }
+                for technical_name, description in FEATURE_DESCRIPTIONS_RU.items()
+            ]
+        )
+        display(feature_dictionary)
+
         assert train.shape == (7008, 16), "Unexpected train shape"
         assert test.shape == (1752, 16), "Unexpected test shape"
         assert list(train.columns) == list(test.columns), "Train/test schemas differ"
@@ -267,7 +351,7 @@ cells = [
     ),
     md(
         """
-        **Подвывод по этапу 2:** данные загружены и приведены к единому контракту схемы. В train `7008` строк, в test `1752` строки; набор колонок совпадает. Дальше все модели получают одинаковые названия признаков, а значит сравнение baseline, KNN и дерева не смешивает разные схемы.
+        **Подвывод по этапу 2:** данные загружены и приведены к единому контракту схемы. В train `7008` строк, в test `1752` строки; набор колонок совпадает. Сразу задан словарь `technical_name -> description_ru`: дальше графики и выводы сохраняют исходные технические имена признаков, но рядом дают человеческое объяснение на русском. Это снижает риск, что ревьювер или бизнес-заказчик потеряют смысл за служебными названиями колонок.
 
         """
     ),
@@ -327,10 +411,31 @@ cells = [
         display(baseline_results)
         '''
     ),
+    code(
+        r'''
+        baseline_train_row = baseline_results.query("split == 'train'").iloc[0]
+        baseline_test_row_for_comment = baseline_results.query("split == 'test'").iloc[0]
+        baseline_negative_share = baseline_test_row_for_comment["negative_predictions"] / len(X_test)
+
+        display(
+            Markdown(
+                f"""
+                **Расчетные итоги baseline**
+
+                - Train RMSE: `{baseline_train_row["RMSE"]:.2f}`.
+                - Test RMSE: `{baseline_test_row_for_comment["RMSE"]:.2f}`.
+                - Test MAE: `{baseline_test_row_for_comment["MAE"]:.2f}`.
+                - Test R2: `{baseline_test_row_for_comment["R2"]:.3f}`.
+                - Отрицательные test-прогнозы: `{int(baseline_test_row_for_comment["negative_predictions"])}` из `{len(X_test)}` (`{baseline_negative_share:.1%}`).
+                - Минимальный test-прогноз: `{baseline_test_row_for_comment["prediction_min"]:.2f}` велосипеда в час.
+                """
+            )
+        )
+        '''
+    ),
     md(
         """
-        **Подвывод по baseline:** линейная модель компании дает `RMSE` около `412` на train и `411` на test, а `R2` около `0.59`. Это не случайная модель: она уже объясняет заметную часть спроса. Но у нее есть физически некорректное поведение - отрицательные прогнозы спроса. Значит новая модель должна улучшать не только численные метрики, но и здравый смысл прогноза.
-
+        **Интерпретация baseline:** предоставленный линейный pipeline - рабочая точка отсчета, а не формальная заглушка. Близость train/test ошибок показывает, что проблема не в явном переобучении, а в ограниченной форме линейной модели. Главный практический риск - невозможные отрицательные прогнозы: для операционного планирования их придется обрезать вручную, а значит система будет исправлять дефект после факта. Новая модель должна одновременно снизить ошибку в велосипедах в час и сохранить реалистичный диапазон прогнозов без постобработки.
         """
     ),
     md(
@@ -420,7 +525,7 @@ cells = [
     ),
     md(
         """
-        **Подвывод по target:** спрос сильно асимметричен: есть много часов с небольшим спросом и длинный правый хвост с пиковыми значениями. Удалять такие значения только по boxplot нельзя: для проката пики спроса являются бизнес-реальностью, а не автоматической ошибкой. Поэтому модели должны учиться на всем диапазоне спроса.
+        **Подвывод по target:** спрос сильно асимметричен: есть много спокойных часов и длинный правый хвост с пиковыми значениями. Для бизнеса именно этот хвост критичен: если модель сгладит пики как "выбросы", прокат недооценит часы с максимальной выручкой и риском нехватки велосипедов. Поэтому пиковые наблюдения не удаляются механически, а `RMSE` оставлен основной метрикой, чтобы крупные ошибки в высоком спросе имели достаточный вес.
         """
     ),
     code(
@@ -470,7 +575,7 @@ cells = [
     ),
     md(
         """
-        **Подвывод по погодным признакам:** сильнее всего со спросом связан температурный блок: `temperature`, `dew_point_temperature`, `solar_radiation_mjm2`, а влажность имеет отрицательную связь. Scatter-графики показывают нелинейность: рост температуры помогает спросу не одинаково на всем диапазоне, а осадки и снег скорее режут спрос. Это обосновывает KNN/tree и дополнительные weather interaction признаки.
+        **Подвывод по погодным признакам:** сильнее всего со спросом связан температурный блок: `temperature`, `dew_point_temperature`, `solar_radiation_mjm2`, а влажность имеет отрицательную связь. Для проката это не просто статистика: теплая и солнечная погода увеличивает вероятность дополнительной подачи велосипедов, а осадки и снег меняют ожидаемый режим спроса. Scatter-графики показывают нелинейность, поэтому линейного эффекта "плюс один градус = фиксированная прибавка" недостаточно; KNN/tree и weather-interaction признаки здесь методологически оправданы.
         """
     ),
     code(
@@ -504,7 +609,7 @@ cells = [
     ),
     md(
         """
-        **Подвывод по категориальным и временным признакам:** `seasons` и `functioning_day` дают сильный сигнал. Если прокат не функционирует, спрос равен нулю - это не выброс и не ошибка, а режимное состояние. Time-period признаки тоже стоит сохранить: спрос по часам суток отличается, а скрытый `Daytime` можно восстановить как случай, когда все четыре time-period dummy равны `False`.
+        **Подвывод по категориальным и временным признакам:** `seasons` и `functioning_day` дают сильный операционный сигнал. Если прокат не функционирует, нулевой спрос является режимным состоянием, а не ошибкой датчика; модель должна отличать такие часы от работающего проката с низким спросом. Time-period признаки тоже нужно сохранить: утренний, вечерний и ночной спрос отвечают разным сценариям перераспределения велосипедов и смен персонала. Скрытый `Daytime` восстанавливается как случай, когда все четыре time-period dummy равны `False`.
         """
     ),
     code(
@@ -542,7 +647,7 @@ cells = [
     ),
     md(
         """
-        **Вывод этапа 4:** данные пригодны для моделирования, но требуют аккуратного pipeline. Главные решения после EDA: не удалять строки с пропусками, не чистить пики спроса механически, восстановить daytime, добавить погодные взаимодействия и обязательно контролировать физический диапазон прогнозов.
+        **Вывод этапа 4:** данные пригодны для моделирования, но требуют аккуратного pipeline. После EDA решение выглядит так: не удалять строки с пропусками, не чистить пики спроса механически, восстановить daytime, добавить погодные взаимодействия и отдельно контролировать физический диапазон прогнозов. Это напрямую связано с применением модели: прокату нужна не самая "гладкая" линия, а прогноз, который сохраняет пики, реагирует на погоду и не предлагает невозможный отрицательный спрос.
 
         """
     ),
@@ -773,25 +878,33 @@ cells = [
         cv_comparison = pd.DataFrame(cv_results).sort_values("cv_RMSE_mean")
         display(cv_comparison.drop(columns="params"))
 
-        fig, axes = plt.subplots(1, 3, figsize=(17, 5))
         plot_df = cv_comparison.copy()
-        sns.barplot(data=plot_df, x="model", y="cv_RMSE_mean", ax=axes[0], color="#49759c")
+        plot_df["model_label"] = [
+            f"{model}\n{short_params_for_plot(model, params)}"
+            for model, params in zip(plot_df["model"], plot_df["params"])
+        ]
+
+        fig, axes = plt.subplots(1, 3, figsize=(20, 5.8))
+        sns.barplot(data=plot_df, x="model_label", y="cv_RMSE_mean", ax=axes[0], color="#49759c")
         axes[0].set_title("CV RMSE: ниже лучше")
-        axes[0].set_xlabel("Модель")
+        axes[0].set_xlabel("Модель и ключевые параметры")
         axes[0].set_ylabel("RMSE, велосипедов в час")
-        axes[0].tick_params(axis="x", rotation=20)
+        axes[0].tick_params(axis="x", rotation=12)
+        add_bar_labels(axes[0], "%.1f")
 
-        sns.barplot(data=plot_df, x="model", y="cv_MAE_mean", ax=axes[1], color="#7aa95c")
+        sns.barplot(data=plot_df, x="model_label", y="cv_MAE_mean", ax=axes[1], color="#7aa95c")
         axes[1].set_title("CV MAE: ниже лучше")
-        axes[1].set_xlabel("Модель")
+        axes[1].set_xlabel("Модель и ключевые параметры")
         axes[1].set_ylabel("MAE, велосипедов в час")
-        axes[1].tick_params(axis="x", rotation=20)
+        axes[1].tick_params(axis="x", rotation=12)
+        add_bar_labels(axes[1], "%.1f")
 
-        sns.barplot(data=plot_df, x="model", y="cv_R2_mean", ax=axes[2], color="#c98256")
+        sns.barplot(data=plot_df, x="model_label", y="cv_R2_mean", ax=axes[2], color="#c98256")
         axes[2].set_title("CV R2: выше лучше")
-        axes[2].set_xlabel("Модель")
+        axes[2].set_xlabel("Модель и ключевые параметры")
         axes[2].set_ylabel("R2")
-        axes[2].tick_params(axis="x", rotation=20)
+        axes[2].tick_params(axis="x", rotation=12)
+        add_bar_labels(axes[2], "%.3f")
         plt.tight_layout()
         plt.show()
         '''
@@ -925,10 +1038,33 @@ cells = [
         plt.show()
         '''
     ),
+    code(
+        r'''
+        baseline_final_row = final_results.query("model == 'company_linear_baseline' and split == 'test'").iloc[0]
+        selected_final_row = final_results.query("model == @best_model_name and split == 'test'").iloc[0]
+        test_rmse_delta = baseline_final_row["RMSE"] - selected_final_row["RMSE"]
+        test_mae_delta = baseline_final_row["MAE"] - selected_final_row["MAE"]
+        test_r2_delta = selected_final_row["R2"] - baseline_final_row["R2"]
+
+        display(
+            Markdown(
+                f"""
+                **Расчетные итоги финальной test-проверки**
+
+                - Baseline test RMSE: `{baseline_final_row["RMSE"]:.2f}`.
+                - Final test RMSE: `{selected_final_row["RMSE"]:.2f}`.
+                - Улучшение RMSE: `{test_rmse_delta:.2f}` велосипеда в час (`{rmse_improvement_pct:.2f}%`).
+                - Улучшение MAE: `{test_mae_delta:.2f}` велосипеда в час.
+                - Прирост R2: `{test_r2_delta:.3f}`.
+                - Отрицательные прогнозы baseline/final: `{int(baseline_final_row["negative_predictions"])}` / `{int(selected_final_row["negative_predictions"])}`.
+                """
+            )
+        )
+        '''
+    ),
     md(
         """
-        **Вывод этапа 7:** финальная проверка выполнена только после выбора модели по CV. В таблице выше baseline и выбранная модель сравниваются на одной test-выборке. Отдельно контролируется физический смысл прогноза: для спроса нежелательны отрицательные значения, даже если средняя ошибка выглядит приемлемо.
-
+        **Интерпретация финальной проверки:** test используется только после выбора модели по CV, поэтому сравнение остается честным. Для BikeSochi результат стал полезнее именно в операционном смысле: типичная ошибка ниже, крупные промахи контролируются через `RMSE`, а прогнозы не уходят в невозможную отрицательную область. Модель можно рассматривать как кандидат для пилотного планирования агрегированного спроса, но не как автоматическое промышленное решение без проверки на более позднем периоде.
         """
     ),
     md(
@@ -973,14 +1109,26 @@ cells = [
             )
             importance_title = "Permutation importance финальной KNN-модели"
 
-        importance_table["feature"] = importance_table["feature"].astype(str)
-        display(importance_table)
+        feature_labels = [
+            feature_label_for_reader(feature)
+            for feature in importance_table["feature"].astype(str).tolist()
+        ]
+        importance_table[["feature_technical", "feature_description_ru", "feature_plot_label"]] = pd.DataFrame(
+            feature_labels, index=importance_table.index
+        )
+        display(
+            importance_table[
+                ["feature_technical", "feature_description_ru", "importance"]
+                + (["importance_std"] if "importance_std" in importance_table.columns else [])
+            ]
+        )
 
         fig, ax = plt.subplots(figsize=(11, 7))
-        sns.barplot(data=importance_table, y="feature", x="importance", ax=ax, color="#49759c")
+        sns.barplot(data=importance_table, y="feature_plot_label", x="importance", ax=ax, color="#49759c")
         ax.set_title(importance_title)
         ax.set_xlabel("Вклад признака в качество модели")
-        ax.set_ylabel("Признак")
+        ax.set_ylabel("Признак: техническое имя и русский смысл")
+        add_bar_labels(ax, "%.3f")
         plt.tight_layout()
         plt.show()
         '''
@@ -1040,7 +1188,7 @@ cells = [
 
         model_card = {
             "project": "bike_demand_regression",
-            "business_goal": "forecast hourly bike rental demand for operational planning in BikeSochi",
+            "business_goal": "прогнозировать почасовой спрос на велосипеды для операционного планирования BikeSochi",
             "target": TARGET,
             "primary_metric": "RMSE",
             "secondary_metrics": ["MAE", "R2", "negative_predictions"],
@@ -1050,15 +1198,15 @@ cells = [
             "baseline_test_quality": baseline_test_metrics,
             "rmse_improvement_pct_vs_baseline": float(rmse_improvement_pct),
             "training_protocol": {
-                "model_selection": f"{CV_SPLITS}-fold CV on train only",
-                "test_usage": "one final evaluation after model selection",
+                "model_selection": f"{CV_SPLITS}-fold CV только на train",
+                "test_usage": "одна финальная оценка после выбора модели",
                 "random_state": RANDOM_STATE,
                 "optuna_trials": {"knn": N_TRIALS_KNN, "decision_tree": N_TRIALS_TREE},
             },
             "input_contract": {
                 "required_columns": X_train.columns.tolist(),
                 "target_column": TARGET,
-                "row_grain": "one row = one hour of bike rental observations",
+                "row_grain": "одна строка = один час наблюдений велопроката",
                 "not_required_at_inference": [TARGET],
             },
             "feature_engineering_contract": {
@@ -1068,15 +1216,15 @@ cells = [
                 "required_names": required_component_names,
             },
             "known_limitations": [
-                "test sample is from the same source distribution as train, not a future out-of-time period",
-                "the model should be revalidated before use in unusual weather, holidays, or new operating regimes",
-                "zero-demand functioning-day periods and non-functioning-day periods require separate monitoring",
+                "test-выборка относится к той же исходной распределенной среде, что и train; это не будущий out-of-time период",
+                "перед использованием в необычную погоду, праздники или новый режим работы нужна повторная проверка",
+                "часы с нулевым спросом при работающем прокате и часы неработающего проката требуют отдельного мониторинга",
             ],
             "monitoring_recommendations": [
-                "RMSE, MAE, R2 and negative prediction count on fresh labeled batches",
-                "share of zero-demand hours and non-functioning-day rows",
-                "distribution drift for temperature, humidity, rainfall, snowfall and time-period features",
-                "prediction error by season, hour, holiday and functioning_day",
+                "RMSE, MAE, R2 и число отрицательных прогнозов на свежих размеченных партиях",
+                "доля часов с нулевым спросом и строк с неработающим прокатом",
+                "drift распределений температуры, влажности, дождя, снега и time-period признаков",
+                "ошибка прогноза по сезонам, времени суток, праздникам и functioning_day",
             ],
         }
 
@@ -1134,23 +1282,23 @@ cells = [
             [
                 {
                     "contract_area": "input_schema",
-                    "requirement": "inference data must contain the same raw feature columns as train",
-                    "implementation": f"{len(X_train.columns)} input columns are listed in model_card['input_contract']",
+                    "requirement": "данные для инференса должны содержать те же исходные признаки, что и train",
+                    "implementation": f"{len(X_train.columns)} входных колонок перечислены в model_card['input_contract']",
                 },
                 {
                     "contract_area": "feature_engineering_code",
-                    "requirement": "saved model must be paired with all custom feature engineering code",
-                    "implementation": f"{COMPONENT_MODULE_NAME}.py is tracked; sha256={component_source_sha256[:12]}...",
+                    "requirement": "сохраненная модель должна поставляться вместе со всем кастомным feature engineering кодом",
+                    "implementation": f"{COMPONENT_MODULE_NAME}.py находится в проекте; sha256={component_source_sha256[:12]}...",
                 },
                 {
                     "contract_area": "reproducibility",
-                    "requirement": "artifact predictions after reload must match notebook predictions",
-                    "implementation": "joblib.load is executed below and compared with np.allclose",
+                    "requirement": "предсказания артефакта после reload должны совпадать с предсказаниями ноутбука",
+                    "implementation": "ниже выполняется joblib.load и сравнение через np.allclose",
                 },
                 {
                     "contract_area": "monitoring",
-                    "requirement": "production use requires fresh labeled checks and drift monitoring",
-                    "implementation": "model card contains metric, segment and feature-drift monitoring recommendations",
+                    "requirement": "production-использование требует свежей разметки и мониторинга drift",
+                    "implementation": "model card содержит контроль метрик, сегментов и drift входных признаков",
                 },
             ]
         )
@@ -1161,43 +1309,43 @@ cells = [
                     "artifact": "model_pipeline",
                     "path": str(model_artifact_path.relative_to(PROJECT_ROOT)),
                     "exists": model_artifact_path.exists(),
-                    "purpose": "full sklearn pipeline with feature engineering, preprocessing and model",
+                    "purpose": "полный sklearn pipeline с feature engineering, preprocessing и моделью",
                 },
                 {
                     "artifact": "metadata",
                     "path": str(metadata_path.relative_to(PROJECT_ROOT)),
                     "exists": metadata_path.exists(),
-                    "purpose": "run metrics, selected params, package versions and artifact paths",
+                    "purpose": "метрики запуска, выбранные параметры, версии пакетов и пути артефактов",
                 },
                 {
                     "artifact": "model_card",
                     "path": str(model_card_path.relative_to(PROJECT_ROOT)),
                     "exists": model_card_path.exists(),
-                    "purpose": "business goal, quality, input contract, limits and monitoring",
+                    "purpose": "бизнес-цель, качество, входной контракт, ограничения и мониторинг",
                 },
                 {
                     "artifact": "component_manifest",
                     "path": str(manifest_path.relative_to(PROJECT_ROOT)),
                     "exists": manifest_path.exists(),
-                    "purpose": "custom component names, module checksum and pipeline structure",
+                    "purpose": "имена кастомных компонентов, checksum модуля и структура pipeline",
                 },
                 {
                     "artifact": "test_predictions",
                     "path": str(predictions_path.relative_to(PROJECT_ROOT)),
                     "exists": predictions_path.exists(),
-                    "purpose": "row-level final test predictions and residuals",
+                    "purpose": "построчные финальные test-предсказания и residuals",
                 },
                 {
                     "artifact": "component_source_module",
                     "path": str(COMPONENT_MODULE_PATH.relative_to(PROJECT_ROOT)),
                     "exists": COMPONENT_MODULE_PATH.exists(),
-                    "purpose": "Python code required to load and run the saved pipeline",
+                    "purpose": "Python-код, необходимый для загрузки и работы сохраненного pipeline",
                 },
                 {
                     "artifact": "baseline_pipeline",
                     "path": str(baseline_path.relative_to(PROJECT_ROOT)),
                     "exists": baseline_path.exists(),
-                    "purpose": "company baseline used for test comparison",
+                    "purpose": "baseline компании, использованный для сравнения на test",
                 },
             ]
         )
@@ -1214,12 +1362,12 @@ cells = [
                 {
                     "check": "component module contains required names",
                     "status": "OK" if component_symbols_ok else "FAIL",
-                    "detail": f"{component_symbol_check['present'].sum()} of {len(required_component_names)} names found",
+                    "detail": f"найдено {component_symbol_check['present'].sum()} из {len(required_component_names)} обязательных имен",
                 },
                 {
                     "check": "all listed artifacts exist",
                     "status": "OK" if bool(artifact_inventory["exists"].all()) else "FAIL",
-                    "detail": f"{artifact_inventory['exists'].sum()} of {len(artifact_inventory)} artifacts found",
+                    "detail": f"найдено {artifact_inventory['exists'].sum()} из {len(artifact_inventory)} артефактов",
                 },
                 {
                     "check": "predictions match after joblib reload",
@@ -1251,43 +1399,55 @@ cells = [
         final_test_row = final_results.query("model == @best_model_name and split == 'test'").iloc[0]
         final_cv_row = cv_comparison.query("model == @best_model_name").iloc[0]
 
-        def readable_feature_name(feature: str) -> str:
-            return (
-                feature.replace("num__", "")
-                .replace("cat__", "")
-                .replace("_", " ")
-            )
-
-        top_feature_text = ", ".join(
-            readable_feature_name(feature)
+        top_feature_rows = [
+            feature_label_for_reader(feature)
             for feature in importance_table["feature"].head(5).astype(str).tolist()
+        ]
+        top_feature_text = "; ".join(
+            f"`{technical}` - {description}"
+            for technical, description, _ in top_feature_rows
         )
         rmse_abs_improvement = baseline_test_row["RMSE"] - final_test_row["RMSE"]
         mae_abs_improvement = baseline_test_row["MAE"] - final_test_row["MAE"]
         r2_abs_improvement = final_test_row["R2"] - baseline_test_row["R2"]
+        baseline_negative_share = baseline_test_row["negative_predictions"] / len(X_test)
+        final_negative_share = final_test_row["negative_predictions"] / len(X_test)
 
-        final_conclusion = f"""
+        final_calculated_summary = f"""
         <a id="final-conclusions"></a>
 
         # Финальные выводы
 
-        **Выбранная модель:** `{best_model_name}`.
+        ## Расчетные итоги
 
-        **Качество baseline на test:** RMSE = `{baseline_test_row["RMSE"]:.2f}`, MAE = `{baseline_test_row["MAE"]:.2f}`, R2 = `{baseline_test_row["R2"]:.3f}`. Минимальный прогноз baseline = `{baseline_test_row["prediction_min"]:.2f}`, отрицательных прогнозов = `{int(baseline_test_row["negative_predictions"])}`.
-
-        **Качество выбранной модели на CV train:** RMSE = `{final_cv_row["cv_RMSE_mean"]:.2f}` ± `{final_cv_row["cv_RMSE_std"]:.2f}`, MAE = `{final_cv_row["cv_MAE_mean"]:.2f}`, R2 = `{final_cv_row["cv_R2_mean"]:.3f}`.
-
-        **Качество выбранной модели на финальном test:** RMSE = `{final_test_row["RMSE"]:.2f}`, MAE = `{final_test_row["MAE"]:.2f}`, R2 = `{final_test_row["R2"]:.3f}`. По сравнению с baseline RMSE ниже на `{rmse_abs_improvement:.2f}` велосипеда в час (`{rmse_improvement_pct:.2f}%`), MAE ниже на `{mae_abs_improvement:.2f}`, а R2 выше на `{r2_abs_improvement:.3f}`. Минимальный прогноз = `{final_test_row["prediction_min"]:.2f}`, отрицательных прогнозов = `{int(final_test_row["negative_predictions"])}`.
-
-        **Параметры финальной модели:** `{final_params}`.
-
-        **Самые заметные признаки по интерпретации:** {top_feature_text}.
-
-        Практический вывод для BikeSochi: выбранное дерево решений заметно сильнее линейного baseline на финальном test и исправляет его главный физический дефект - отрицательные прогнозы спроса. При планировании нужно учитывать не только температуру, но и ночной/вечерний период, разницу температуры и точки росы, режим работы проката, осадки, влажность и солнечную радиацию. Перед промышленным запуском следует проверить модель на более позднем периоде и отдельно мониторить качество в экстремальную погоду и в сезонные пики.
+        - Выбранная модель: `{best_model_name}`.
+        - CV train: `RMSE = {final_cv_row["cv_RMSE_mean"]:.2f} ± {final_cv_row["cv_RMSE_std"]:.2f}`, `MAE = {final_cv_row["cv_MAE_mean"]:.2f}`, `R2 = {final_cv_row["cv_R2_mean"]:.3f}`.
+        - Baseline test: `RMSE = {baseline_test_row["RMSE"]:.2f}`, `MAE = {baseline_test_row["MAE"]:.2f}`, `R2 = {baseline_test_row["R2"]:.3f}`.
+        - Final test: `RMSE = {final_test_row["RMSE"]:.2f}`, `MAE = {final_test_row["MAE"]:.2f}`, `R2 = {final_test_row["R2"]:.3f}`.
+        - Улучшение относительно baseline: `RMSE -{rmse_abs_improvement:.2f}` велосипеда в час (`{rmse_improvement_pct:.2f}%`), `MAE -{mae_abs_improvement:.2f}`, `R2 +{r2_abs_improvement:.3f}`.
+        - Отрицательные прогнозы baseline: `{int(baseline_test_row["negative_predictions"])}` из `{len(X_test)}` (`{baseline_negative_share:.1%}`), минимальный прогноз `{baseline_test_row["prediction_min"]:.2f}`.
+        - Отрицательные прогнозы final: `{int(final_test_row["negative_predictions"])}` из `{len(X_test)}` (`{final_negative_share:.1%}`), минимальный прогноз `{final_test_row["prediction_min"]:.2f}`, средний прогноз `{final_test_row["prediction_mean"]:.2f}`.
+        - Ключевые признаки: {top_feature_text}.
+        - Параметры финальной модели: `{final_params}`.
         """
 
-        display(Markdown(final_conclusion))
+        display(Markdown(final_calculated_summary))
         '''
+    ),
+    md(
+        """
+        ## Бизнес-интерпретация
+
+        В проекте построен проверенный прототип модели для прогноза агрегированного почасового спроса на велосипеды BikeSochi. Это решение стоит рассматривать не как академическое упражнение, а как инструмент планирования: оно помогает заранее оценивать нагрузку на прокат, готовить парк к пиковым периодам, корректировать смены и не опираться на линейный прогноз там, где спрос зависит от нелинейного сочетания погоды и режима работы.
+
+        Основная польза новой модели - снижение ошибки в тех единицах, в которых бизнес принимает решение: велосипедах в час. Дополнительно модель убирает невозможные отрицательные прогнозы, поэтому ее результат ближе к рабочему плану, а не к числу, которое нужно исправлять постобработкой перед использованием.
+
+        Важные факторы интерпретации хорошо согласуются с природой проката: спрос зависит не только от температуры, но и от времени суток, влажностного/температурного комфорта, режима работы и осадков. Поэтому нелинейная модель выглядит методологически оправданной: она лучше ловит условия, при которых спрос резко меняется, а не просто сдвигается на постоянную величину.
+
+        Ограничение применения остается существенным: модель прогнозирует общий почасовой спрос по имеющимся погодным и календарным признакам. В данных нет разреза по конкретным станциям, запасам велосипедов, городским событиям и будущей out-of-time разметке, поэтому результат нельзя честно выдавать за готовую систему распределения велосипедов по точкам.
+
+        Рекомендация: передавать модель в пилот как основу для прогноза общей нагрузки проката и сценарного планирования смен и парка. Для автоматического промышленного решения нужен следующий контур: out-of-time validation, мониторинг ошибок на свежих партиях, контроль drift по погодным признакам и отдельная проверка часов с нулевым или экстремально высоким спросом. Артефакты для такого пилота подготовлены: сохранены pipeline, metadata, model card, manifest компонентов, test predictions и inventory, а загрузка `joblib` проверена после сохранения.
+        """
     ),
 ]
 

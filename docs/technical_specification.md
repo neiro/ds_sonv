@@ -55,8 +55,12 @@ baseline-модель за счет нелинейных моделей `KNeighb
 - короткие, читаемые code cells;
 - после каждого смыслового блока - подвывод;
 - после EDA - таблица "наблюдение -> решение";
+- в начале исследования задан единый словарь `technical_name ->
+  description_ru`, который используется в графиках, таблицах и выводах;
 - аккуратные графики: заголовок, подписи осей, единицы измерения,
   `plt.show()`, без служебных `<AxesSubplot...>`;
+- на сравнительных графиках подписаны значения метрик и, где уместно, ключевые
+  параметры моделей в технической и русской формулировке;
 - непрерывные признаки визуализируются histogram/boxplot, дискретные и
   категориальные - countplot/barplot;
 - таблицы не обрезают длинный текст: `pd.set_option("display.max_colwidth",
@@ -83,18 +87,19 @@ baseline-модель за счет нелинейных моделей `KNeighb
 2. Подготовить окружение, импорты, пути, `RANDOM_STATE`, версии библиотек.
 3. Загрузить train/test/baseline, нормализовать схему колонок одной функцией.
 4. Провести аудит данных: размеры, типы, пропуски, дубли, диапазоны, target.
-5. Оценить baseline train/test и зафиксировать его ограничения.
-6. Провести EDA target, погодных, категориальных и time-period признаков.
-7. Сформировать таблицу EDA-решений для pipeline и feature engineering.
-8. Создать `BikeFeatureEngineer` и фабрики pipeline для KNN/tree.
-9. Провести `DummyRegressor` sanity check на train CV.
-10. Настроить KNN и Decision Tree через Optuna с 5-fold CV.
-11. Сравнить модели на train CV по `RMSE`, `MAE`, `R2`.
-12. Выбрать лучшую модель, обучить на всем train, один раз оценить на test.
-13. Провести интерпретацию: feature importances или permutation importance.
-14. Сохранить pipeline, metadata, model card, manifest компонентов, inventory
+5. Зафиксировать словарь технических признаков и русских описаний.
+6. Оценить baseline train/test и зафиксировать его ограничения.
+7. Провести EDA target, погодных, категориальных и time-period признаков.
+8. Сформировать таблицу EDA-решений для pipeline и feature engineering.
+9. Создать `BikeFeatureEngineer` и фабрики pipeline для KNN/tree.
+10. Провести `DummyRegressor` sanity check на train CV.
+11. Настроить KNN и Decision Tree через Optuna с 5-fold CV.
+12. Сравнить модели на train CV по `RMSE`, `MAE`, `R2`.
+13. Выбрать лучшую модель, обучить на всем train, один раз оценить на test.
+14. Провести интерпретацию: feature importances или permutation importance.
+15. Сохранить pipeline, metadata, model card, manifest компонентов, inventory
     артефактов и test predictions; проверить reload.
-15. Провести внутренний аудит качества, исправить замечания, перезапустить
+16. Провести внутренний аудит качества, исправить замечания, перезапустить
     ноутбук сверху вниз.
 
 ## Внутренний контроль после каждого этапа
