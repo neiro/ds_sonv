@@ -228,6 +228,7 @@ ml-env/models/coffee_churn_*
 
 # Local runtime state
 .jupyter_runtime/
+.ipython/
 
 # Local datasets and binary model artifacts
 data/raw/*.csv
