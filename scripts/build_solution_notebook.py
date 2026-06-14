@@ -84,8 +84,9 @@ cells = [
         6. [Этап 5. Pipeline и feature engineering](#stage-5)
         7. [Этап 6. Optuna и 5-fold CV](#stage-6)
         8. [Этап 7. Финальная проверка на test](#stage-7)
-        9. [Этап 7.1. Сегментный аудит против baseline](#stage-7-1)
-        10. [Этап 8. Интерпретация и артефакты](#stage-8)
+        9. [Этап 7.1. Устойчивость выигрыша и pilot readiness](#stage-7-1)
+        10. [Этап 7.2. Сегментный аудит против baseline](#stage-7-2)
+        11. [Этап 8. Интерпретация и артефакты](#stage-8)
         11. [Финальные выводы](#final-conclusions)
         """
     ),
@@ -103,8 +104,8 @@ cells = [
         - Baseline компании оценивается отдельно как предоставленная модель. Его test-метрики нужны для итогового сравнения, но не для настройки новых моделей.
         - Графики используются не декоративно: каждый блок EDA должен дать решение для предобработки, признаков или интерпретации.
         - Технические названия признаков остаются видимыми, а русский смысл дается в круглых скобках. Так ревьювер видит исходную схему данных, а бизнес-заказчик не теряет смысл.
-        - После общей test-метрики отдельно проверяется, в каких сегментах новая модель выигрывает у baseline. Средний `RMSE` важен, но для проката еще важнее понимать часы и условия, где ошибка реально стала меньше.
-        - Финальная рекомендация должна отвечать на операционные вопросы: насколько ошибка меньше baseline, исчезли ли невозможные отрицательные прогнозы, какие факторы мониторить и почему модель нельзя запускать без проверки на свежем периоде.
+        - После общей test-метрики отдельно проверяется устойчивость выигрыша, интервалы прогноза, decile-аудит и сегменты, где новая модель выигрывает у baseline.
+        - Финальная рекомендация должна отвечать на операционные вопросы: насколько ошибка меньше baseline, исчезли ли невозможные отрицательные прогнозы, какие часы требуют внимания и почему модель нельзя запускать без проверки на свежем периоде.
         """
     ),
     md(
@@ -144,7 +145,7 @@ cells = [
         from sklearn.inspection import permutation_importance
         from sklearn.impute import SimpleImputer
         from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
-        from sklearn.model_selection import KFold, cross_validate
+        from sklearn.model_selection import KFold, cross_val_predict, cross_validate
         from sklearn.neighbors import KNeighborsRegressor
         from sklearn.pipeline import Pipeline
         from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -1767,7 +1768,603 @@ cells = [
     md(
         """
         <a id="stage-7-1"></a>
-        ## Этап 7.1. Сегментный аудит против baseline
+        ## Этап 7.1. Устойчивость выигрыша и pilot readiness
+
+        Здесь я не добавляю новые алгоритмы и не переотбираю модель по test. Модель уже выбрана на train CV. Дальше идут проверки, которые нужны для взрослого пилота: насколько устойчив выигрыш против baseline, какой диапазон неопределенности у прогноза и где модель ошибается сильнее.
+        """
+    ),
+    code(
+        r'''
+        N_BOOTSTRAP = 3_000
+        bootstrap_rng = np.random.default_rng(RANDOM_STATE)
+        actual_test = y_test.to_numpy()
+        baseline_prediction_test = np.asarray(baseline_test_predictions)
+        final_prediction_test = np.asarray(final_test_predictions)
+
+        bootstrap_rows = []
+        for _ in range(N_BOOTSTRAP):
+            indices = bootstrap_rng.integers(0, len(actual_test), len(actual_test))
+            actual_sample = actual_test[indices]
+            baseline_sample = baseline_prediction_test[indices]
+            final_sample = final_prediction_test[indices]
+            bootstrap_rows.append(
+                {
+                    "RMSE_delta": root_mean_squared_error(
+                        actual_sample,
+                        baseline_sample,
+                    )
+                    - root_mean_squared_error(actual_sample, final_sample),
+                    "MAE_delta": mean_absolute_error(
+                        actual_sample,
+                        baseline_sample,
+                    )
+                    - mean_absolute_error(actual_sample, final_sample),
+                }
+            )
+
+        bootstrap_improvement = pd.DataFrame(bootstrap_rows)
+
+
+        def bootstrap_summary_row(column: str, label: str) -> dict[str, Any]:
+            values = bootstrap_improvement[column]
+            ci_low, ci_high = values.quantile([0.025, 0.975]).tolist()
+            return {
+                "metric": label,
+                "mean_delta": values.mean(),
+                "ci_2_5": ci_low,
+                "ci_97_5": ci_high,
+                "share_positive": (values > 0).mean(),
+            }
+
+
+        bootstrap_summary = pd.DataFrame(
+            [
+                bootstrap_summary_row(
+                    "RMSE_delta",
+                    "baseline_RMSE - final_RMSE",
+                ),
+                bootstrap_summary_row(
+                    "MAE_delta",
+                    "baseline_MAE - final_MAE",
+                ),
+            ]
+        )
+        display(bootstrap_summary)
+
+        fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+        bootstrap_plot_specs = [
+            ("RMSE_delta", "Bootstrap: выигрыш RMSE", "RMSE delta, прокатов/час"),
+            ("MAE_delta", "Bootstrap: выигрыш MAE", "MAE delta, прокатов/час"),
+        ]
+        for ax, (column, title, xlabel) in zip(axes, bootstrap_plot_specs):
+            sns.histplot(
+                bootstrap_improvement[column],
+                bins=40,
+                kde=True,
+                color="#49759c",
+                ax=ax,
+            )
+            ci_low, ci_high = bootstrap_improvement[column].quantile(
+                [0.025, 0.975]
+            )
+            ax.axvline(0, color="black", linewidth=1)
+            ax.axvline(ci_low, color="#c98256", linestyle="--", linewidth=1.5)
+            ax.axvline(ci_high, color="#c98256", linestyle="--", linewidth=1.5)
+            ax.set_title(title)
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel("Количество bootstrap-выборок")
+        plt.tight_layout()
+        plt.show()
+
+        rmse_bootstrap_row = bootstrap_summary.query(
+            "metric == 'baseline_RMSE - final_RMSE'"
+        ).iloc[0]
+        mae_bootstrap_row = bootstrap_summary.query(
+            "metric == 'baseline_MAE - final_MAE'"
+        ).iloc[0]
+
+        show_markdown(
+            f"""
+            **Расчетная проверка устойчивости выигрыша**
+
+            - Bootstrap 95% CI для выигрыша RMSE:
+              `{rmse_bootstrap_row["ci_2_5"]:.2f}` -
+              `{rmse_bootstrap_row["ci_97_5"]:.2f}` прокатов/час.
+            - Доля bootstrap-выборок, где final лучше baseline по RMSE:
+              `{rmse_bootstrap_row["share_positive"]:.1%}`.
+            - Bootstrap 95% CI для выигрыша MAE:
+              `{mae_bootstrap_row["ci_2_5"]:.2f}` -
+              `{mae_bootstrap_row["ci_97_5"]:.2f}` прокатов/час.
+            """
+        )
+        '''
+    ),
+    md(
+        """
+        Bootstrap отвечает на практичный вопрос: не выглядит ли выигрыш случайным из-за конкретного test-набора. Если почти во всех bootstrap-выборках финальная модель лучше baseline, это сильнее одной строки с RMSE. Для заказчика это означает, что улучшение не держится на нескольких удачных часах.
+        """
+    ),
+    md(
+        """
+        Следующий слой - интервалы прогноза. Точечный прогноз удобен, но для пилота полезнее знать диапазон риска: обычный прогноз и верхнюю границу, к которой стоит готовить парк и смены. Интервалы ниже калибруются на out-of-fold ошибках train, чтобы не учиться на test.
+        """
+    ),
+    code(
+        r'''
+        final_oof_predictions = cross_val_predict(
+            final_pipeline,
+            X_train,
+            y_train,
+            cv=cv,
+            n_jobs=1,
+        )
+        calibration_frame = pd.DataFrame(
+            {
+                "oof_prediction": final_oof_predictions,
+                "abs_residual": np.abs(y_train.to_numpy() - final_oof_predictions),
+            }
+        )
+        _, demand_band_edges = pd.qcut(
+            calibration_frame["oof_prediction"],
+            q=[0, 1 / 3, 2 / 3, 1],
+            retbins=True,
+            duplicates="drop",
+        )
+        demand_band_edges[0] = -np.inf
+        demand_band_edges[-1] = np.inf
+        demand_band_labels = [
+            "low_predicted_demand (низкий прогноз спроса)",
+            "medium_predicted_demand (средний прогноз спроса)",
+            "high_predicted_demand (высокий прогноз спроса)",
+        ][: len(demand_band_edges) - 1]
+
+        calibration_frame["prediction_band"] = pd.cut(
+            calibration_frame["oof_prediction"],
+            bins=demand_band_edges,
+            labels=demand_band_labels,
+            include_lowest=True,
+        )
+        interval_quantiles = (
+            calibration_frame.groupby("prediction_band", observed=True)[
+                "abs_residual"
+            ]
+            .quantile([0.5, 0.8, 0.9])
+            .unstack()
+            .rename(
+                columns={
+                    0.5: "q50_abs_residual",
+                    0.8: "q80_abs_residual",
+                    0.9: "q90_abs_residual",
+                }
+            )
+            .reset_index()
+        )
+        global_q90_abs_residual = calibration_frame["abs_residual"].quantile(0.9)
+
+        prediction_interval_frame = pd.DataFrame(
+            {
+                "actual": actual_test,
+                "baseline_prediction": baseline_prediction_test,
+                "final_prediction": final_prediction_test,
+            }
+        )
+        prediction_interval_frame["prediction_band"] = pd.cut(
+            prediction_interval_frame["final_prediction"],
+            bins=demand_band_edges,
+            labels=demand_band_labels,
+            include_lowest=True,
+        )
+        band_to_q90 = {
+            str(key): float(value)
+            for key, value in interval_quantiles.set_index("prediction_band")[
+                "q90_abs_residual"
+            ].to_dict().items()
+        }
+        interval_radius_90 = (
+            prediction_interval_frame["prediction_band"]
+            .astype(str)
+            .map(band_to_q90)
+            .astype(float)
+            .fillna(global_q90_abs_residual)
+        )
+        prediction_interval_frame["prediction_lower_90"] = np.clip(
+            prediction_interval_frame["final_prediction"] - interval_radius_90,
+            0,
+            None,
+        )
+        prediction_interval_frame["prediction_upper_90"] = (
+            prediction_interval_frame["final_prediction"] + interval_radius_90
+        )
+        prediction_interval_frame["covered_90"] = (
+            prediction_interval_frame["actual"].between(
+                prediction_interval_frame["prediction_lower_90"],
+                prediction_interval_frame["prediction_upper_90"],
+            )
+        )
+        prediction_interval_frame["interval_width_90"] = (
+            prediction_interval_frame["prediction_upper_90"]
+            - prediction_interval_frame["prediction_lower_90"]
+        )
+
+        prediction_interval_summary = pd.DataFrame(
+            [
+                {
+                    "interval": "banded_oof_abs_residual_q90",
+                    "test_coverage": prediction_interval_frame["covered_90"].mean(),
+                    "mean_width": prediction_interval_frame[
+                        "interval_width_90"
+                    ].mean(),
+                    "median_width": prediction_interval_frame[
+                        "interval_width_90"
+                    ].median(),
+                    "global_q90_abs_residual": global_q90_abs_residual,
+                }
+            ]
+        )
+        interval_by_band = (
+            prediction_interval_frame.groupby("prediction_band", observed=True)
+            .agg(
+                n_hours=("actual", "size"),
+                actual_mean=("actual", "mean"),
+                prediction_mean=("final_prediction", "mean"),
+                interval_coverage_90=("covered_90", "mean"),
+                mean_interval_width_90=("interval_width_90", "mean"),
+            )
+            .reset_index()
+        )
+        band_error_rows = []
+        for band, group in prediction_interval_frame.groupby(
+            "prediction_band",
+            observed=True,
+        ):
+            band_error_rows.append(
+                {
+                    "prediction_band": band,
+                    "mean_abs_error": mean_absolute_error(
+                        group["actual"],
+                        group["final_prediction"],
+                    ),
+                }
+            )
+        band_error_table = pd.DataFrame(band_error_rows)
+        interval_by_band = (
+            interval_by_band.merge(band_error_table, on="prediction_band", how="left")
+            .merge(interval_quantiles, on="prediction_band", how="left")
+        )
+
+        display(prediction_interval_summary)
+        display(interval_by_band)
+
+        interval_plot = interval_by_band.copy()
+        interval_plot["band_label"] = interval_plot["prediction_band"].astype(str).map(
+            lambda label: wrap_plot_label(label, width=34)
+        )
+
+        fig, axes = plt.subplots(1, 2, figsize=(17, 6))
+        sns.barplot(
+            data=interval_plot,
+            y="band_label",
+            x="q90_abs_residual",
+            color="#49759c",
+            ax=axes[0],
+        )
+        axes[0].set_title("OOF q90 ошибки по уровню прогноза")
+        axes[0].set_xlabel("q90 абсолютной ошибки, прокатов/час")
+        axes[0].set_ylabel("")
+        add_bar_labels(axes[0], "%.1f")
+
+        sns.barplot(
+            data=interval_plot,
+            y="band_label",
+            x="interval_coverage_90",
+            color="#7aa95c",
+            ax=axes[1],
+        )
+        axes[1].axvline(0.9, color="black", linestyle="--", linewidth=1)
+        axes[1].set_title("Покрытие 90% интервала на test")
+        axes[1].set_xlabel("Доля фактов внутри интервала")
+        axes[1].set_ylabel("")
+        axes[1].set_xlim(0, 1)
+        add_bar_labels(axes[1], "%.2f")
+
+        plt.tight_layout()
+        plt.show()
+
+        interval_summary_row = prediction_interval_summary.iloc[0]
+        show_markdown(
+            f"""
+            **Расчетные итоги по интервалам**
+
+            - Фактическое покрытие 90% interval на test:
+              `{interval_summary_row["test_coverage"]:.1%}`.
+            - Средняя ширина interval:
+              `{interval_summary_row["mean_width"]:.2f}` прокатов/час.
+            - Медианная ширина interval:
+              `{interval_summary_row["median_width"]:.2f}` прокатов/час.
+            """
+        )
+        '''
+    ),
+    md(
+        """
+        Интервал прогноза не делает модель "точнее" сам по себе. Его смысл другой: он показывает диапазон риска. Если верхняя граница высокая, операционная команда может заранее проверить парк и смены, даже если точечный прогноз выглядит умеренным.
+        """
+    ),
+    md(
+        """
+        Теперь смотрю decile-аудит. Он показывает, как модель ведет себя от самых спокойных часов до верхних 10% фактического спроса. Это важнее обычного scatterplot: бизнесу нужно знать, не начинает ли модель систематически недооценивать самые дорогие часы.
+        """
+    ),
+    code(
+        r'''
+        decile_frame = prediction_interval_frame.copy()
+        decile_frame["actual_demand_decile"] = pd.qcut(
+            pd.Series(actual_test).rank(method="first"),
+            q=10,
+            labels=[f"D{index}" for index in range(1, 11)],
+        )
+        decile_rows = []
+        for decile, group in decile_frame.groupby(
+            "actual_demand_decile",
+            observed=True,
+        ):
+            baseline_rmse_decile = root_mean_squared_error(
+                group["actual"],
+                group["baseline_prediction"],
+            )
+            final_rmse_decile = root_mean_squared_error(
+                group["actual"],
+                group["final_prediction"],
+            )
+            decile_rows.append(
+                {
+                    "actual_demand_decile": decile,
+                    "n_hours": len(group),
+                    "actual_mean": group["actual"].mean(),
+                    "baseline_RMSE": baseline_rmse_decile,
+                    "final_RMSE": final_rmse_decile,
+                    "RMSE_delta": baseline_rmse_decile - final_rmse_decile,
+                    "baseline_MAE": mean_absolute_error(
+                        group["actual"],
+                        group["baseline_prediction"],
+                    ),
+                    "final_MAE": mean_absolute_error(
+                        group["actual"],
+                        group["final_prediction"],
+                    ),
+                    "final_bias": (
+                        group["final_prediction"] - group["actual"]
+                    ).mean(),
+                    "final_underprediction_share": (
+                        group["final_prediction"] < group["actual"]
+                    ).mean(),
+                    "interval_coverage_90": group["covered_90"].mean(),
+                }
+            )
+
+        decile_audit = pd.DataFrame(decile_rows)
+        display(decile_audit)
+
+        decile_rmse_plot = decile_audit.melt(
+            id_vars=["actual_demand_decile"],
+            value_vars=["baseline_RMSE", "final_RMSE"],
+            var_name="model",
+            value_name="RMSE",
+        )
+        decile_rmse_plot["model"] = decile_rmse_plot["model"].map(
+            {
+                "baseline_RMSE": "baseline",
+                "final_RMSE": best_model_name,
+            }
+        )
+
+        fig, axes = plt.subplots(1, 2, figsize=(17, 6))
+        sns.lineplot(
+            data=decile_rmse_plot,
+            x="actual_demand_decile",
+            y="RMSE",
+            hue="model",
+            marker="o",
+            ax=axes[0],
+        )
+        axes[0].set_title("RMSE по decile фактического спроса")
+        axes[0].set_xlabel("Decile фактического спроса")
+        axes[0].set_ylabel("RMSE, прокатов/час")
+        axes[0].legend(title="Модель")
+
+        sns.barplot(
+            data=decile_audit,
+            x="actual_demand_decile",
+            y="final_bias",
+            color="#c98256",
+            ax=axes[1],
+        )
+        axes[1].axhline(0, color="black", linewidth=1)
+        axes[1].set_title("Bias финальной модели по decile")
+        axes[1].set_xlabel("Decile фактического спроса")
+        axes[1].set_ylabel("Средний прогноз - факт, прокатов/час")
+        add_bar_labels(axes[1], "%.1f")
+        plt.tight_layout()
+        plt.show()
+
+        top_decile = decile_audit.iloc[-1]
+        show_markdown(
+            f"""
+            **Расчетные итоги decile-аудита**
+
+            - Верхний decile спроса: средний факт
+              `{top_decile["actual_mean"]:.2f}` прокатов/час.
+            - В верхнем decile выигрыш RMSE против baseline:
+              `{top_decile["RMSE_delta"]:.2f}` прокатов/час.
+            - Bias финальной модели в верхнем decile:
+              `{top_decile["final_bias"]:.2f}` прокатов/час.
+            - Доля недооценок в верхнем decile:
+              `{top_decile["final_underprediction_share"]:.1%}`.
+            """
+        )
+        '''
+    ),
+    md(
+        """
+        Decile-аудит переводит качество модели в риск пилота. Если верхние decile дают сильную недооценку, модель нельзя без контроля использовать для планирования пиков. Если ошибка в верхних decile ниже baseline, это сильный аргумент: модель полезна именно там, где цена промаха выше.
+        """
+    ),
+    md(
+        """
+        Последняя часть этого слоя - простая таблица действий. Это не автоматическое бизнес-правило для production, а понятный каркас пилота: что делать с низким, обычным и рискованно высоким прогнозом.
+        """
+    ),
+    code(
+        r'''
+        business_low_threshold, business_high_threshold = y_train.quantile(
+            [0.33, 0.66]
+        ).tolist()
+        prediction_interval_frame["pilot_action_band"] = np.select(
+            [
+                prediction_interval_frame["prediction_upper_90"]
+                >= business_high_threshold,
+                prediction_interval_frame["prediction_upper_90"]
+                < business_low_threshold,
+            ],
+            [
+                "capacity_watch (риск высокого спроса)",
+                "low_load (низкая ожидаемая нагрузка)",
+            ],
+            default="normal_plan (обычное планирование)",
+        )
+
+        pilot_action_table = pd.DataFrame(
+            [
+                {
+                    "pilot_action_band": "capacity_watch (риск высокого спроса)",
+                    "rule": (
+                        "prediction_upper_90 >= train 66% demand quantile"
+                    ),
+                    "business_meaning": (
+                        "даже с учетом неопределенности есть риск "
+                        "высокой нагрузки"
+                    ),
+                    "recommended_action": (
+                        "заранее проверить парк, смену поддержки "
+                        "и доступность велосипедов"
+                    ),
+                    "monitoring_question": (
+                        "не недооценивает ли модель пики спроса"
+                    ),
+                },
+                {
+                    "pilot_action_band": "normal_plan (обычное планирование)",
+                    "rule": "между low и high порогами train",
+                    "business_meaning": "типовая нагрузка без явного сигнала риска",
+                    "recommended_action": (
+                        "использовать прогноз для обычного почасового плана"
+                    ),
+                    "monitoring_question": (
+                        "не растет ли ошибка в отдельных погодных режимах"
+                    ),
+                },
+                {
+                    "pilot_action_band": "low_load (низкая ожидаемая нагрузка)",
+                    "rule": (
+                        "prediction_upper_90 < train 33% demand quantile"
+                    ),
+                    "business_meaning": (
+                        "даже верхняя граница прогноза остается низкой"
+                    ),
+                    "recommended_action": (
+                        "не держать лишний ресурс без отдельной причины"
+                    ),
+                    "monitoring_question": (
+                        "не пропускает ли модель неожиданные всплески спроса"
+                    ),
+                },
+            ]
+        )
+
+        pilot_action_summary = []
+        for action_band, group in prediction_interval_frame.groupby(
+            "pilot_action_band",
+            observed=True,
+        ):
+            pilot_action_summary.append(
+                {
+                    "pilot_action_band": action_band,
+                    "n_hours": len(group),
+                    "actual_mean": group["actual"].mean(),
+                    "prediction_mean": group["final_prediction"].mean(),
+                    "upper_90_mean": group["prediction_upper_90"].mean(),
+                    "final_MAE": mean_absolute_error(
+                        group["actual"],
+                        group["final_prediction"],
+                    ),
+                }
+            )
+        pilot_action_summary = pd.DataFrame(pilot_action_summary)
+
+        show_table("Pilot action rules", pilot_action_table)
+        show_table("Pilot action summary on test", pilot_action_summary)
+
+        fig, axes = plt.subplots(1, 2, figsize=(17, 6))
+        action_plot = pilot_action_summary.copy()
+        action_plot["action_label"] = action_plot["pilot_action_band"].map(
+            lambda label: wrap_plot_label(label, width=28)
+        )
+        sns.barplot(
+            data=action_plot,
+            y="action_label",
+            x="n_hours",
+            color="#49759c",
+            ax=axes[0],
+        )
+        axes[0].set_title("Сколько test-часов попадает в действие")
+        axes[0].set_xlabel("Количество часов")
+        axes[0].set_ylabel("")
+        add_bar_labels(axes[0], "%.0f")
+
+        sns.barplot(
+            data=action_plot,
+            y="action_label",
+            x="final_MAE",
+            color="#7aa95c",
+            ax=axes[1],
+        )
+        axes[1].set_title("MAE финальной модели по действиям")
+        axes[1].set_xlabel("MAE, прокатов/час")
+        axes[1].set_ylabel("")
+        add_bar_labels(axes[1], "%.1f")
+        plt.tight_layout()
+        plt.show()
+
+        capacity_watch_hours = int(
+            (
+                prediction_interval_frame["pilot_action_band"]
+                == "capacity_watch (риск высокого спроса)"
+            ).sum()
+        )
+        show_markdown(
+            f"""
+            **Расчетные итоги pilot readiness**
+
+            - Train-порог низкой нагрузки: `{business_low_threshold:.2f}`.
+            - Train-порог высокой нагрузки: `{business_high_threshold:.2f}`.
+            - Test-часов в зоне `capacity_watch`: `{capacity_watch_hours}`.
+            - Эти часы не требуют автоматического решения, но требуют
+              приоритетного просмотра при пилоте.
+            """
+        )
+        '''
+    ),
+    md(
+        """
+        **Вывод по pilot readiness:** без добавления новых моделей мы получили слой, который обычно отличает исследовательский ноутбук от решения для пилота. Теперь есть не только точечный прогноз, но и проверка устойчивости выигрыша, интервалы неопределенности, аудит верхних decile спроса и понятная таблица действий.
+
+        Отдельно отмечу потенциальный следующий шаг. Когда в программе будут пройдены ансамбли и boosting, их стоит аккуратно проверить как challenger-модели: `RandomForestRegressor`, `ExtraTreesRegressor`, `GradientBoostingRegressor` или `HistGradientBoostingRegressor` часто сильны на табличных нелинейных задачах. В этой работе я их не использую, чтобы не выходить за рамку текущей постановки и изученного материала, но это честное направление для улучшения качества после базового решения.
+        """
+    ),
+    md(
+        """
+        <a id="stage-7-2"></a>
+        ## Этап 7.2. Сегментный аудит против baseline
 
         Средний `RMSE` отвечает на вопрос "стала ли модель лучше в среднем". Для проката этого мало. Бизнесу важно понять, где именно появляется выигрыш: в пиковом спросе, в дождь, ночью, по сезонам или только на простых часах.
 
@@ -2162,6 +2759,21 @@ cells = [
         predictions_frame[TARGET] = y_test.values
         predictions_frame["prediction"] = final_test_predictions
         predictions_frame["residual"] = y_test.values - final_test_predictions
+        predictions_frame["prediction_lower_90"] = prediction_interval_frame[
+            "prediction_lower_90"
+        ].to_numpy()
+        predictions_frame["prediction_upper_90"] = prediction_interval_frame[
+            "prediction_upper_90"
+        ].to_numpy()
+        predictions_frame["prediction_band"] = prediction_interval_frame[
+            "prediction_band"
+        ].astype(str).to_numpy()
+        predictions_frame["pilot_action_band"] = prediction_interval_frame[
+            "pilot_action_band"
+        ].to_numpy()
+        predictions_frame["interval_covered_90"] = prediction_interval_frame[
+            "covered_90"
+        ].to_numpy()
         predictions_frame.to_csv(predictions_path, index=False)
 
         def file_sha256(path: Path) -> str:
@@ -2245,6 +2857,26 @@ cells = [
                 "source_sha256": component_source_sha256,
                 "required_names": required_component_names,
             },
+            "uncertainty_checks": {
+                "paired_bootstrap": bootstrap_summary.to_dict(orient="records"),
+                "prediction_interval_summary": prediction_interval_summary.to_dict(
+                    orient="records"
+                ),
+                "prediction_interval_by_band": interval_by_band.to_dict(
+                    orient="records"
+                ),
+                "decile_audit": decile_audit.to_dict(orient="records"),
+            },
+            "pilot_readiness": {
+                "action_rules": pilot_action_table.to_dict(orient="records"),
+                "action_summary": pilot_action_summary.to_dict(orient="records"),
+            },
+            "future_modeling_note": (
+                "После изучения ансамблей стоит проверить boosting/forest "
+                "challenger-модели как потенциальные улучшатели качества; "
+                "в этой работе они не используются, чтобы не выходить "
+                "за рамку текущей постановки."
+            ),
             "known_limitations": [
                 (
                     "test-выборка относится к той же исходной среде, "
@@ -2307,6 +2939,11 @@ cells = [
             "component_module": COMPONENT_MODULE_NAME,
             "component_source_sha256": component_source_sha256,
             "required_component_names": required_component_names,
+            "bootstrap_improvement": bootstrap_summary.to_dict(orient="records"),
+            "prediction_interval_summary": prediction_interval_summary.to_dict(
+                orient="records"
+            ),
+            "pilot_action_summary": pilot_action_summary.to_dict(orient="records"),
             "versions": versions.to_dict(orient="records"),
             "artifact_paths": {
                 "model": str(model_artifact_path),
@@ -2421,7 +3058,10 @@ cells = [
                     "artifact": "test_predictions",
                     "path": str(predictions_path.relative_to(PROJECT_ROOT)),
                     "exists": predictions_path.exists(),
-                    "purpose": "построчные финальные test-предсказания и residuals",
+                    "purpose": (
+                        "построчные test-прогнозы, residuals, "
+                        "90% intervals и pilot action band"
+                    ),
                 },
                 {
                     "artifact": "component_source_module",
@@ -2581,6 +3221,23 @@ cells = [
                     f"`{best_segment['segment_value']}` "
                     f"(`RMSE -{best_segment['RMSE_delta']:.2f}` прокатов/час)."
                 ),
+                (
+                    "- Bootstrap 95% CI выигрыша RMSE: "
+                    f"`{rmse_bootstrap_row['ci_2_5']:.2f}` - "
+                    f"`{rmse_bootstrap_row['ci_97_5']:.2f}` прокатов/час; "
+                    "доля положительного выигрыша "
+                    f"`{rmse_bootstrap_row['share_positive']:.1%}`."
+                ),
+                (
+                    "- 90% prediction interval на test покрывает "
+                    f"`{interval_summary_row['test_coverage']:.1%}` "
+                    "фактических значений; средняя ширина interval "
+                    f"`{interval_summary_row['mean_width']:.2f}` прокатов/час."
+                ),
+                (
+                    "- Pilot readiness: test-часов в зоне "
+                    f"`capacity_watch` = `{capacity_watch_hours}`."
+                ),
                 f"- Ключевые признаки: {top_feature_text}.",
                 f"- Параметры финальной модели: `{final_params}`.",
                 (
@@ -2588,6 +3245,12 @@ cells = [
                     "`BikeFeatureEngineer` внутри `Pipeline`; transformer "
                     "сохранен в импортируемом модуле и проверен после "
                     "`joblib.load()`."
+                ),
+                (
+                    "- Потенциальный следующий шаг после изучения ансамблей: "
+                    "проверить boosting/forest challenger-модели как "
+                    "улучшатели качества, не смешивая это с текущим "
+                    "честным baseline-сравнением."
                 ),
             ]
         )
@@ -2601,13 +3264,15 @@ cells = [
 
         Для BikeSouth результат можно читать так: финальная модель стала лучше текущей линейной baseline-модели в той единице, в которой бизнес принимает решения, - в прокатах велосипедов за час. Ошибка стала ниже, а невозможные отрицательные прогнозы исчезли. Это значит, что прогноз уже не нужно "чинить руками" перед тем, как обсуждать его с операционной командой.
 
-        Практический смысл модели - заранее видеть нагрузку по часам. Если ожидается высокий спрос, команда может раньше подготовить парк, смены и поддержку. Если спрос низкий, не нужно держать лишний запас и людей "на всякий случай". Модель не обещает идеально угадать каждый час, но она уменьшает размер ошибки там, где baseline грубее сглаживает погоду, сезон и период дня.
+        Практический смысл модели - заранее видеть нагрузку по часам. Если ожидается высокий спрос, команда может раньше подготовить парк, смены и поддержку. Если спрос низкий, не нужно держать лишний запас и людей "на всякий случай". Модель не обещает идеально угадать каждый час, поэтому к точечному прогнозу добавлены интервалы: они показывают не только ожидаемое значение, но и верхнюю границу риска для пилота.
 
-        Отдельно проверено, где именно появляется выигрыш. Это важнее одной средней цифры: прокату нужно понимать, помогает ли модель в пиковом спросе, в дождь/снег, ночью, в праздники и при закрытом прокате. Сегментный аудит превращает метрику в рабочий список для пилота: сильные сегменты можно использовать увереннее, слабые - заранее поставить на мониторинг.
+        Отдельно проверено, где именно появляется выигрыш. Это важнее одной средней цифры: прокату нужно понимать, помогает ли модель в пиковом спросе, в дождь/снег, ночью, в праздники и при закрытом прокате. Сегментный аудит, decile-аудит и таблица pilot actions превращают метрику в рабочий список для пилота: сильные сегменты можно использовать увереннее, слабые - заранее поставить на мониторинг.
 
         Дополнительный пункт закрыт инженерно: новые признаки создаются не ручным кодом перед обучением, а внутри `BikeFeatureEngineer` в составе `Pipeline`. При повторном запуске, сохранении и загрузке используются те же правила подготовки данных. Проверка `joblib.load()` подтверждает, что модель не держится на скрытом состоянии ноутбука.
 
         Рекомендация: брать модель в пилот для общего почасового прогноза спроса, но не считать ее готовой системой распределения велосипедов по станциям. В данных нет запасов на конкретных станциях, городских событий, цен, ремонтов и отдельной out-of-time проверки на будущем месяце. Перед автоматическим использованием нужно прогнать модель на более свежем периоде и отдельно посмотреть пиковые часы, дождь, снег, нулевой спрос и часы с неработающим прокатом. Все артефакты для такого пилота сохранены: pipeline, metadata, model card, manifest, predictions и inventory.
+
+        Отдельное направление роста - ансамбли и boosting. После того как эти методы будут пройдены в программе, их стоит проверить как challenger-модели: случайный лес, extremely randomized trees и gradient boosting часто хорошо усиливают табличные нелинейные задачи. В текущем решении я их не добавляю намеренно: работа остается в рамках изученных моделей, но честно показывает, куда двигаться дальше для дополнительного прироста качества.
         """
     ),
 ]
