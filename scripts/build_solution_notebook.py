@@ -25,11 +25,11 @@ cells = [
         <a id="author-solution"></a>
         # Авторское решение: прогнозирование спроса на велопрокат BikeSouth
 
-        Смысл задачи простой: BikeSouth нужно заранее понимать, сколько велосипедов понадобится в конкретный час. Если прогноз завышен, компания зря держит лишний парк и смены. Если занижен, в пиковые часы людям не хватит велосипедов.
+        Смысл задачи простой: BikeSouth нужно заранее понимать, сколько прокатов велосипедов ожидается в конкретный час. Если прогноз завышен, компания зря держит лишний парк и смены. Если занижен, в пиковые часы людям может не хватить доступных велосипедов.
 
         **Цель:** выбрать модель, которая лучше текущей линейной регрессии прогнозирует `Rented Bike Count` и не выдает невозможный отрицательный спрос.
 
-        **Основная метрика:** `RMSE`, потому что крупные промахи в пиковые часы для проката особенно дороги. Дополнительно считаю `MAE` и `R2`: `MAE` показывает типичную ошибку в велосипедах в час, а `R2` помогает понять, насколько модель объясняет изменчивость спроса относительно простого среднего.
+        **Основная метрика:** `RMSE`, потому что крупные промахи в пиковые часы для проката особенно дороги. Дополнительно считаю `MAE` и `R2`: `MAE` показывает типичную ошибку в прокатах/час, а `R2` помогает понять, насколько модель объясняет изменчивость спроса относительно простого среднего.
 
         **Ключевое ограничение:** `ds_s14_test_data.csv` не используется для подбора гиперпараметров и выбора модели. Новые модели выбираются только по 5-fold CV на `ds_s14_train_data.csv`; test применяется один раз в конце.
         """
@@ -259,7 +259,7 @@ cells = [
         BASE_FEATURES = BASE_NUMERIC_FEATURES + CATEGORICAL_FEATURES + TIME_FEATURES
 
         FEATURE_DESCRIPTIONS_RU = {
-            "rented_bike_count": "спрос на велосипеды",
+            "rented_bike_count": "число прокатов велосипедов",
             "temperature": "температура воздуха",
             "humidity": "влажность воздуха",
             "wind_speed_ms": "скорость ветра",
@@ -299,7 +299,7 @@ cells = [
         }
 
         FEATURE_UNITS = {
-            "rented_bike_count": "велосипедов в час",
+            "rented_bike_count": "прокатов/час",
             "temperature": "°C",
             "humidity": "%",
             "wind_speed_ms": "м/с",
@@ -497,7 +497,7 @@ cells = [
                 - Test MAE: `{baseline_test_row_for_comment["MAE"]:.2f}`.
                 - Test R2: `{baseline_test_row_for_comment["R2"]:.3f}`.
                 - Отрицательные test-прогнозы: `{int(baseline_test_row_for_comment["negative_predictions"])}` из `{len(X_test)}` (`{baseline_negative_share:.1%}`).
-                - Минимальный test-прогноз: `{baseline_test_row_for_comment["prediction_min"]:.2f}` велосипеда в час.
+                - Минимальный test-прогноз: `{baseline_test_row_for_comment["prediction_min"]:.2f}` проката/час.
                 """
             )
         )
@@ -586,12 +586,12 @@ cells = [
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         sns.histplot(train[TARGET], bins=40, kde=True, ax=axes[0], color="#2f6f9f")
         axes[0].set_title("Распределение почасового спроса в train")
-        axes[0].set_xlabel("rented_bike_count (спрос), велосипедов/час")
+        axes[0].set_xlabel("rented_bike_count (прокаты), прокатов/час")
         axes[0].set_ylabel("Количество наблюдений")
 
         sns.boxplot(x=train[TARGET], ax=axes[1], color="#8fbcd4")
         axes[1].set_title("Хвосты и возможные выбросы спроса")
-        axes[1].set_xlabel("rented_bike_count (спрос), велосипедов/час")
+        axes[1].set_xlabel("rented_bike_count (прокаты), прокатов/час")
         plt.tight_layout()
         plt.show()
 
@@ -629,7 +629,7 @@ cells = [
             ax.set_title(f"Спрос и {wrap_plot_label(continuous_labels[column], width=32)}")
             ax.set_xlabel(wrap_plot_label(continuous_labels[column], width=30))
             ax.set_ylabel("")
-        fig.supylabel("rented_bike_count (спрос), велосипедов/час", x=0.01, fontsize=11)
+        fig.supylabel("rented_bike_count (прокаты), прокатов/час", x=0.01, fontsize=11)
         plt.tight_layout(rect=(0.03, 0, 1, 1))
         plt.show()
 
@@ -733,7 +733,7 @@ cells = [
             ax.set_xlabel("")
             ax.set_ylabel("")
             ax.tick_params(axis="x", rotation=20)
-        fig.supylabel("Средний спрос, велосипедов/час", x=0.01, fontsize=11)
+        fig.supylabel("Средний спрос, прокатов/час", x=0.01, fontsize=11)
         plt.tight_layout(rect=(0.03, 0, 1, 1))
         plt.show()
         '''
@@ -1064,14 +1064,14 @@ cells = [
         sns.barplot(data=plot_df, x="model_label", y="cv_RMSE_mean", ax=axes[0], color="#49759c")
         axes[0].set_title("CV RMSE: ниже лучше")
         axes[0].set_xlabel("Модель")
-        axes[0].set_ylabel("RMSE, велосипедов в час")
+        axes[0].set_ylabel("RMSE, прокатов/час")
         axes[0].tick_params(axis="x", rotation=0)
         add_bar_labels(axes[0], "%.1f")
 
         sns.barplot(data=plot_df, x="model_label", y="cv_MAE_mean", ax=axes[1], color="#7aa95c")
         axes[1].set_title("CV MAE: ниже лучше")
         axes[1].set_xlabel("Модель")
-        axes[1].set_ylabel("MAE, велосипедов в час")
+        axes[1].set_ylabel("MAE, прокатов/час")
         axes[1].tick_params(axis="x", rotation=0)
         add_bar_labels(axes[1], "%.1f")
 
@@ -1206,12 +1206,12 @@ cells = [
         max_value = max(y_test.max(), final_test_predictions.max())
         axes[0].plot([0, max_value], [0, max_value], color="black", linestyle="--", linewidth=1)
         axes[0].set_title("Финальная модель: факт против прогноза")
-        axes[0].set_xlabel("Факт, велосипедов/час")
-        axes[0].set_ylabel("Прогноз, велосипедов/час")
+        axes[0].set_xlabel("Факт, прокатов/час")
+        axes[0].set_ylabel("Прогноз, прокатов/час")
 
         sns.histplot(residuals, bins=35, kde=True, ax=axes[1], color="#7aa95c")
         axes[1].set_title("Распределение ошибок финальной модели")
-        axes[1].set_xlabel("Ошибка y_true - y_pred, велосипедов в час")
+        axes[1].set_xlabel("Ошибка y_true - y_pred, прокатов/час")
         axes[1].set_ylabel("Количество наблюдений")
 
         comparison_plot = pd.DataFrame(
@@ -1225,8 +1225,8 @@ cells = [
         sns.scatterplot(data=comparison_plot, x="actual", y="final_prediction", alpha=0.35, label=best_model_name, ax=axes[2])
         axes[2].plot([0, max_value], [0, max_value], color="black", linestyle="--", linewidth=1)
         axes[2].set_title("Baseline и финальная модель на test")
-        axes[2].set_xlabel("Факт, велосипедов/час")
-        axes[2].set_ylabel("Прогноз, велосипедов/час")
+        axes[2].set_xlabel("Факт, прокатов/час")
+        axes[2].set_ylabel("Прогноз, прокатов/час")
         axes[2].legend()
         axes[3].axis("off")
 
@@ -1249,8 +1249,8 @@ cells = [
 
                 - Baseline test RMSE: `{baseline_final_row["RMSE"]:.2f}`.
                 - Final test RMSE: `{selected_final_row["RMSE"]:.2f}`.
-                - Улучшение RMSE: `{test_rmse_delta:.2f}` велосипеда в час (`{rmse_improvement_pct:.2f}%`).
-                - Улучшение MAE: `{test_mae_delta:.2f}` велосипеда в час.
+                - Улучшение RMSE: `{test_rmse_delta:.2f}` проката/час (`{rmse_improvement_pct:.2f}%`).
+                - Улучшение MAE: `{test_mae_delta:.2f}` проката/час.
                 - Прирост R2: `{test_r2_delta:.3f}`.
                 - Отрицательные прогнозы baseline/final: `{int(baseline_final_row["negative_predictions"])}` / `{int(selected_final_row["negative_predictions"])}`.
                 """
@@ -1386,8 +1386,8 @@ cells = [
                 **Расчетные итоги сегментного аудита**
 
                 - Test-срезов, где финальная модель лучше baseline по RMSE: `{segment_positive_count}` из `{segment_total_count}`.
-                - Самый сильный выигрыш: `{best_segment["segment_group"]}` / `{best_segment["segment_value"]}`; `n = {int(best_segment["n_hours"])}`, baseline RMSE `{best_segment["baseline_RMSE"]:.2f}`, final RMSE `{best_segment["final_RMSE"]:.2f}`, улучшение `{best_segment["RMSE_delta"]:.2f}` велосипеда в час (`{best_segment["RMSE_improvement_pct"]:.2f}%`).
-                - Самый слабый сегмент: `{weakest_segment["segment_group"]}` / `{weakest_segment["segment_value"]}`; `n = {int(weakest_segment["n_hours"])}`, изменение RMSE `{weakest_segment["RMSE_delta"]:.2f}` велосипеда в час.
+                - Самый сильный выигрыш: `{best_segment["segment_group"]}` / `{best_segment["segment_value"]}`; `n = {int(best_segment["n_hours"])}`, baseline RMSE `{best_segment["baseline_RMSE"]:.2f}`, final RMSE `{best_segment["final_RMSE"]:.2f}`, улучшение `{best_segment["RMSE_delta"]:.2f}` проката/час (`{best_segment["RMSE_improvement_pct"]:.2f}%`).
+                - Самый слабый сегмент: `{weakest_segment["segment_group"]}` / `{weakest_segment["segment_value"]}`; `n = {int(weakest_segment["n_hours"])}`, изменение RMSE `{weakest_segment["RMSE_delta"]:.2f}` проката/час.
                 """
             )
         )
@@ -1426,13 +1426,13 @@ cells = [
         fig, axes = plt.subplots(1, 2, figsize=(18, 8))
         sns.barplot(data=plot_segments, y="segment_label", x="RMSE_delta", ax=axes[0], color="#49759c")
         axes[0].set_title("Где финальная модель сильнее baseline")
-        axes[0].set_xlabel("Снижение RMSE, велосипедов в час")
+        axes[0].set_xlabel("Снижение RMSE, прокатов/час")
         axes[0].set_ylabel("")
         add_bar_labels(axes[0], "%.1f")
 
         sns.barplot(data=rmse_pair_plot, y="segment_label", x="RMSE", hue="model", ax=axes[1])
         axes[1].set_title("Baseline и final RMSE в тех же сегментах")
-        axes[1].set_xlabel("RMSE, велосипедов в час")
+        axes[1].set_xlabel("RMSE, прокатов/час")
         axes[1].set_ylabel("")
         axes[1].tick_params(axis="y", labelleft=False)
         axes[1].legend(title="Модель")
@@ -1594,7 +1594,7 @@ cells = [
 
         model_card = {
             "project": "bike_demand_regression",
-            "business_goal": "прогнозировать почасовой спрос на велосипеды для операционного планирования BikeSouth",
+            "business_goal": "прогнозировать число прокатов велосипедов за час для операционного планирования BikeSouth",
             "target": TARGET,
             "primary_metric": "RMSE",
             "secondary_metrics": ["MAE", "R2", "negative_predictions"],
@@ -1830,10 +1830,10 @@ cells = [
         - CV train: `RMSE = {final_cv_row["cv_RMSE_mean"]:.2f} ± {final_cv_row["cv_RMSE_std"]:.2f}`, `MAE = {final_cv_row["cv_MAE_mean"]:.2f}`, `R2 = {final_cv_row["cv_R2_mean"]:.3f}`.
         - Baseline test: `RMSE = {baseline_test_row["RMSE"]:.2f}`, `MAE = {baseline_test_row["MAE"]:.2f}`, `R2 = {baseline_test_row["R2"]:.3f}`.
         - Final test: `RMSE = {final_test_row["RMSE"]:.2f}`, `MAE = {final_test_row["MAE"]:.2f}`, `R2 = {final_test_row["R2"]:.3f}`.
-        - Улучшение относительно baseline: `RMSE -{rmse_abs_improvement:.2f}` велосипеда в час (`{rmse_improvement_pct:.2f}%`), `MAE -{mae_abs_improvement:.2f}`, `R2 +{r2_abs_improvement:.3f}`.
+        - Улучшение относительно baseline: `RMSE -{rmse_abs_improvement:.2f}` проката/час (`{rmse_improvement_pct:.2f}%`), `MAE -{mae_abs_improvement:.2f}`, `R2 +{r2_abs_improvement:.3f}`.
         - Отрицательные прогнозы baseline: `{int(baseline_test_row["negative_predictions"])}` из `{len(X_test)}` (`{baseline_negative_share:.1%}`), минимальный прогноз `{baseline_test_row["prediction_min"]:.2f}`.
         - Отрицательные прогнозы final: `{int(final_test_row["negative_predictions"])}` из `{len(X_test)}` (`{final_negative_share:.1%}`), минимальный прогноз `{final_test_row["prediction_min"]:.2f}`, средний прогноз `{final_test_row["prediction_mean"]:.2f}`.
-        - Сегментный аудит: final лучше baseline в `{segment_positive_count}` из `{segment_total_count}` test-срезов; самый сильный выигрыш - `{best_segment["segment_group"]}` / `{best_segment["segment_value"]}` (`RMSE -{best_segment["RMSE_delta"]:.2f}` велосипеда в час).
+        - Сегментный аудит: final лучше baseline в `{segment_positive_count}` из `{segment_total_count}` test-срезов; самый сильный выигрыш - `{best_segment["segment_group"]}` / `{best_segment["segment_value"]}` (`RMSE -{best_segment["RMSE_delta"]:.2f}` проката/час).
         - Ключевые признаки: {top_feature_text}.
         - Параметры финальной модели: `{final_params}`.
         - Дополнительный пункт закрыт через `BikeFeatureEngineer` внутри `Pipeline`; transformer сохранен в импортируемом модуле и проверен после `joblib.load()`.
@@ -1848,7 +1848,7 @@ cells = [
 
         Для BikeSouth это не просто "модель с метриками", а более аккуратный способ заранее оценивать нагрузку по часам. Текущая линейная baseline-модель ошибается сильнее и иногда уходит в отрицательный спрос. Финальная модель этого не делает: прогноз остается в физически возможном диапазоне, поэтому его не нужно вручную обрезать перед отчетом или пилотом.
 
-        Главный практический смысл - планирование общей нагрузки. Когда модель заранее видит высокий спрос, можно раньше подготовить парк, смены и поддержку. Когда спрос низкий, компания не держит лишний запас "на всякий случай". Ошибка все еще есть, но она стала меньше в понятной единице - велосипедах в час, а не только в абстрактной статистике.
+        Главный практический смысл - планирование общей нагрузки. Когда модель заранее видит высокий спрос, можно раньше подготовить парк, смены и поддержку. Когда спрос низкий, компания не держит лишний запас "на всякий случай". Ошибка все еще есть, но она стала меньше в понятной единице - прокатах велосипедов за час, а не только в абстрактной статистике.
 
         Отдельно проверено, где именно модель выигрывает у baseline. Это важнее одной средней цифры: если улучшение заметно в сложных сегментах вроде высокого спроса, осадков или отдельных периодов дня, модель помогает там, где ошибка дороже. Слабые сегменты из аудита не нужно игнорировать - их стоит держать в мониторинге во время пилота.
 
