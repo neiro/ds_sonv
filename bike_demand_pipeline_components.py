@@ -54,26 +54,45 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
     input_features = BASE_FEATURES
     output_features = MODEL_FEATURES_AFTER_ENGINEERING
 
-    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> "BikeFeatureEngineer":
-        frame = pd.DataFrame(X)
+    def __init__(self, unknown_feature_policy: str = "ignore") -> None:
+        self.unknown_feature_policy = unknown_feature_policy
+
+    def _validate_unknown_feature_policy(self) -> None:
+        allowed_policies = {"ignore", "raise"}
+        if self.unknown_feature_policy not in allowed_policies:
+            raise ValueError(
+                "unknown_feature_policy must be one of "
+                f"{sorted(allowed_policies)}, got {self.unknown_feature_policy!r}"
+            )
+
+    def _check_columns(self, frame: pd.DataFrame) -> list[str]:
         missing_columns = [
             column for column in self.input_features if column not in frame.columns
         ]
         if missing_columns:
             raise ValueError(f"Missing required columns: {missing_columns}")
+
+        unexpected_columns = [
+            column for column in frame.columns if column not in self.input_features
+        ]
+        if unexpected_columns and self.unknown_feature_policy == "raise":
+            raise ValueError(f"Unexpected columns: {unexpected_columns}")
+        return unexpected_columns
+
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> "BikeFeatureEngineer":
+        self._validate_unknown_feature_policy()
+        frame = pd.DataFrame(X)
+        unexpected_columns = self._check_columns(frame)
         self.n_features_in_ = frame.shape[1]
         self.feature_names_in_ = np.asarray(frame.columns, dtype=object)
+        self.ignored_features_in_ = np.asarray(unexpected_columns, dtype=object)
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         check_is_fitted(self, "feature_names_in_")
 
         frame = pd.DataFrame(X)
-        missing_columns = [
-            column for column in self.input_features if column not in frame.columns
-        ]
-        if missing_columns:
-            raise ValueError(f"Missing required columns: {missing_columns}")
+        self._check_columns(frame)
 
         frame = frame.loc[:, self.input_features].copy()
         numeric_columns = BASE_NUMERIC_FEATURES + TIME_FEATURES
