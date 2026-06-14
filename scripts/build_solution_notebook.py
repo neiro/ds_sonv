@@ -946,34 +946,58 @@ cells = [
         display(cv_comparison.drop(columns="params"))
 
         plot_df = cv_comparison.copy()
-        plot_df["model_label"] = [
-            f"{model}\n{short_params_for_plot(model, params)}"
+        model_display_names = {
+            "dummy_mean": "Dummy\nmean",
+            "knn_optuna": "KNN\nOptuna",
+            "decision_tree_optuna": "DecisionTree\nOptuna",
+        }
+        plot_df["model_label"] = plot_df["model"].map(model_display_names).fillna(plot_df["model"])
+        plot_df["parameter_summary"] = [
+            short_params_for_plot(model, params).replace("\n", "; ")
             for model, params in zip(plot_df["model"], plot_df["params"])
         ]
+        display(plot_df[["model", "model_label", "parameter_summary"]])
 
         fig, axes = plt.subplots(2, 2, figsize=(16, 10))
         axes = axes.ravel()
         sns.barplot(data=plot_df, x="model_label", y="cv_RMSE_mean", ax=axes[0], color="#49759c")
         axes[0].set_title("CV RMSE: ниже лучше")
-        axes[0].set_xlabel("Модель и ключевые параметры")
+        axes[0].set_xlabel("Модель")
         axes[0].set_ylabel("RMSE, велосипедов в час")
-        axes[0].tick_params(axis="x", rotation=12)
+        axes[0].tick_params(axis="x", rotation=0)
         add_bar_labels(axes[0], "%.1f")
 
         sns.barplot(data=plot_df, x="model_label", y="cv_MAE_mean", ax=axes[1], color="#7aa95c")
         axes[1].set_title("CV MAE: ниже лучше")
-        axes[1].set_xlabel("Модель и ключевые параметры")
+        axes[1].set_xlabel("Модель")
         axes[1].set_ylabel("MAE, велосипедов в час")
-        axes[1].tick_params(axis="x", rotation=12)
+        axes[1].tick_params(axis="x", rotation=0)
         add_bar_labels(axes[1], "%.1f")
 
         sns.barplot(data=plot_df, x="model_label", y="cv_R2_mean", ax=axes[2], color="#c98256")
         axes[2].set_title("CV R2: выше лучше")
-        axes[2].set_xlabel("Модель и ключевые параметры")
+        axes[2].set_xlabel("Модель")
         axes[2].set_ylabel("R2")
-        axes[2].tick_params(axis="x", rotation=12)
+        axes[2].tick_params(axis="x", rotation=0)
         add_bar_labels(axes[2], "%.3f")
+
         axes[3].axis("off")
+        axes[3].set_title("Ключевые параметры")
+        parameter_blocks = []
+        for row in plot_df.itertuples(index=False):
+            model_label = row.model_label.replace("\n", " ")
+            parameter_summary = row.parameter_summary.replace("; ", "\n")
+            parameter_blocks.append(f"{model_label}:\n{parameter_summary}")
+        parameter_text = "\n\n".join(parameter_blocks)
+        axes[3].text(
+            0.0,
+            0.98,
+            parameter_text,
+            va="top",
+            ha="left",
+            fontsize=10,
+            linespacing=1.25,
+        )
         plt.tight_layout()
         plt.show()
         '''
