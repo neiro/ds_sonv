@@ -17,6 +17,7 @@ def code(text: str):
 path = Path("ml-env/work.ipynb")
 nb = nbf.read(path, as_version=4)
 base_cells = nb.cells[:23]
+component_module_source = Path("bike_demand_pipeline_components.py").read_text(encoding="utf-8")
 
 cells = [
     md(
@@ -90,7 +91,7 @@ cells = [
         import time
         import warnings
         from pathlib import Path
-        from typing import Any, Dict, List, Optional, Tuple
+        from typing import Any
 
         import joblib
         import matplotlib.pyplot as plt
@@ -100,7 +101,7 @@ cells = [
         import seaborn as sns
         import sklearn
         from IPython.display import Markdown, display
-        from sklearn.base import BaseEstimator, TransformerMixin
+        from sklearn.base import BaseEstimator
         from sklearn.compose import ColumnTransformer
         from sklearn.dummy import DummyRegressor
         from sklearn.inspection import permutation_importance
@@ -123,7 +124,7 @@ cells = [
         TARGET_ORIGINAL = "Rented Bike Count"
         TARGET = "rented_bike_count"
 
-        def find_project_root(start: Optional[Path] = None) -> Path:
+        def find_project_root(start: Path | None = None) -> Path:
             start = (start or Path.cwd()).resolve()
             for candidate in [start, *start.parents]:
                 has_project_files = all(
@@ -173,9 +174,39 @@ cells = [
         display(versions)
         '''
     ),
+    code(
+        f'''
+        COMPONENT_MODULE_SOURCE = {component_module_source!r}
+
+        previous_component_source = (
+            COMPONENT_MODULE_PATH.read_text(encoding="utf-8")
+            if COMPONENT_MODULE_PATH.exists()
+            else None
+        )
+        component_status = "unchanged"
+        if previous_component_source != COMPONENT_MODULE_SOURCE:
+            COMPONENT_MODULE_PATH.write_text(COMPONENT_MODULE_SOURCE, encoding="utf-8")
+            component_status = "created" if previous_component_source is None else "updated"
+
+        importlib.invalidate_caches()
+        sys.modules.pop(COMPONENT_MODULE_NAME, None)
+        component_bootstrap = pd.DataFrame(
+            [
+                {{
+                    "component_module": COMPONENT_MODULE_NAME,
+                    "path": str(COMPONENT_MODULE_PATH),
+                    "status": component_status,
+                    "source_sha256": hashlib.sha256(COMPONENT_MODULE_SOURCE.encode("utf-8")).hexdigest(),
+                    "source_bytes": len(COMPONENT_MODULE_SOURCE.encode("utf-8")),
+                }}
+            ]
+        )
+        display(component_bootstrap)
+        '''
+    ),
     md(
         """
-        **Подвывод по этапу 1:** окружение готово к повторному запуску. Самая важная деталь - `scikit-learn 1.6.1`: на этой версии без ошибок открывается baseline из `joblib`.
+        **Подвывод по этапу 1:** окружение готово к повторному запуску. Сам ноутбук уже содержит исходный код кастомного transformer и при запуске сам создает нужный module-файл для `joblib`. Поэтому для проверки в тренажере достаточно загрузить notebook и входные данные/baseline, без ручного переноса дополнительных `.py` файлов. Самая важная деталь окружения - `scikit-learn 1.6.1`: на этой версии без ошибок открывается baseline из `joblib`.
 
         """
     ),
@@ -253,13 +284,18 @@ cells = [
             "time_period_morning": "утренний период",
             "time_period_night": "ночной период",
             "time_period_daytime": "дневной период",
-            "rainfall_flag": "наличие дождя",
-            "snowfall_flag": "наличие снега",
             "dew_point_gap": "разница температуры и точки росы",
-            "comfort_temperature": "комфортный диапазон температуры",
-            "low_visibility_flag": "низкая видимость",
-            "temperature_x_humidity": "взаимодействие температуры и влажности",
-            "temperature_x_solar": "взаимодействие температуры и солнечной радиации",
+            "has_rain": "наличие дождя",
+            "has_snow": "наличие снега",
+            "has_precipitation": "наличие любых осадков",
+            "comfortable_temperature": "комфортный диапазон температуры",
+            "freezing_weather": "морозная погода",
+            "hot_weather": "жаркая погода",
+            "hot_and_humid": "жара вместе с высокой влажностью",
+            "temp_x_solar": "взаимодействие температуры и солнечной радиации",
+            "temp_x_humidity": "взаимодействие температуры и влажности",
+            "rain_x_wind": "взаимодействие дождя и ветра",
+            "snow_x_freezing": "снег при морозной погоде",
         }
 
         FEATURE_UNITS = {
@@ -307,7 +343,7 @@ cells = [
             return "\n".join(textwrap.wrap(str(label), width=width, break_long_words=False))
 
 
-        def short_params_for_plot(model_name: str, params: Dict[str, Any]) -> str:
+        def short_params_for_plot(model_name: str, params: dict[str, Any]) -> str:
             if not params:
                 return "strategy=mean (среднее)"
             if model_name == "decision_tree_optuna":
@@ -417,7 +453,7 @@ cells = [
     ),
     code(
         r'''
-        def regression_metrics(y_true: pd.Series, y_pred: np.ndarray) -> Dict[str, float]:
+        def regression_metrics(y_true: pd.Series, y_pred: np.ndarray) -> dict[str, Any]:
             return {
                 "RMSE": root_mean_squared_error(y_true, y_pred),
                 "MAE": mean_absolute_error(y_true, y_pred),
@@ -429,7 +465,7 @@ cells = [
             }
 
 
-        def evaluate_fitted_model(name: str, model: Pipeline, X: pd.DataFrame, y: pd.Series, split: str) -> Dict[str, Any]:
+        def evaluate_fitted_model(name: str, model: Pipeline, X: pd.DataFrame, y: pd.Series, split: str) -> dict[str, Any]:
             predictions = model.predict(X)
             result = {"model": name, "split": split}
             result.update(regression_metrics(y, predictions))
@@ -695,7 +731,7 @@ cells = [
 
         Теперь решения из EDA превращаются в один pipeline. Важная идея: снаружи pipeline получает сырые признаки, а внутри сам делает все нужные шаги - добавляет признаки, заполняет пропуски, кодирует категории и обучает модель. Так меньше риска забыть какой-то шаг при повторном запуске или инференсе.
 
-        Дополнительный пункт закрывается отдельным инженерным решением: кастомный `BikeFeatureEngineer` сделан как sklearn-compatible transformer с методами `fit` и `transform`. Он делает только безопасные вещи: восстанавливает `time_period_daytime` (дневной период), добавляет флаги осадков и погодные взаимодействия. Target он не видит. Transformer вынесен в `bike_demand_pipeline_components.py`, чтобы сохраненный `joblib` открывался в чистом Python-процессе.
+        Дополнительный пункт закрывается отдельным инженерным решением: кастомный `BikeFeatureEngineer` сделан как sklearn-compatible transformer с методами `fit` и `transform`. Он делает только безопасные вещи: восстанавливает `time_period_daytime` (дневной период), добавляет флаги осадков, температурные режимы и погодные взаимодействия. Target он не видит. Исходный код transformer встроен в notebook; при запуске notebook сам записывает `bike_demand_pipeline_components.py`, чтобы сохраненный `joblib` открывался в чистом Python-процессе.
         """
     ),
     code(
@@ -710,7 +746,7 @@ cells = [
 
 
         def make_preprocessor(scale_numeric: bool) -> ColumnTransformer:
-            numeric_steps: List[Tuple[str, Any]] = [("imputer", SimpleImputer(strategy="median"))]
+            numeric_steps: list[tuple[str, Any]] = [("imputer", SimpleImputer(strategy="median"))]
             if scale_numeric:
                 numeric_steps.append(("scaler", StandardScaler()))
 
@@ -767,12 +803,12 @@ cells = [
                 },
                 {
                     "reviewer_requirement": "Новые признаки должны иметь смысл для задачи.",
-                    "implementation": "Добавлены `time_period_daytime` (дневной период), `rainfall_flag` (наличие дождя), `snowfall_flag` (наличие снега), `dew_point_gap` (разница температуры и точки росы), `comfort_temperature` (комфортный диапазон температуры), `low_visibility_flag` (низкая видимость), `temperature_x_humidity` и `temperature_x_solar` (погодные взаимодействия).",
+                    "implementation": "Добавлены `time_period_daytime` (дневной период), `has_rain` (наличие дождя), `has_snow` (наличие снега), `has_precipitation` (наличие любых осадков), `dew_point_gap` (разница температуры и точки росы), `comfortable_temperature` (комфортный диапазон температуры), `freezing_weather`/`hot_weather` (температурные режимы), `hot_and_humid`, `temp_x_humidity`, `temp_x_solar`, `rain_x_wind` и `snow_x_freezing` (погодные взаимодействия).",
                     "where_checked": "EDA-решения, список `ENGINEERED_FEATURES`, importance финальной модели.",
                 },
                 {
                     "reviewer_requirement": "Сохраненная модель должна открываться вне ноутбука.",
-                    "implementation": "Класс transformer лежит в импортируемом модуле `bike_demand_pipeline_components.py`, модуль включен в manifest и проверен checksum.",
+                    "implementation": "Класс transformer встроен в notebook как source string, при запуске записывается в импортируемый модуль `bike_demand_pipeline_components.py`; модуль включен в manifest и проверен checksum.",
                     "where_checked": "`joblib.load`, `component_symbol_check`, `artifact_inventory`.",
                 },
             ]
@@ -806,7 +842,7 @@ cells = [
         }
 
 
-        def summarize_cv_scores(model_name: str, scores: Dict[str, np.ndarray], params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        def summarize_cv_scores(model_name: str, scores: dict[str, np.ndarray], params: dict[str, Any] | None = None) -> dict[str, Any]:
             return {
                 "model": model_name,
                 "cv_RMSE_mean": -float(scores["test_rmse"].mean()),
@@ -819,7 +855,7 @@ cells = [
             }
 
 
-        def cross_validate_pipeline(model_name: str, pipeline: Pipeline, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        def cross_validate_pipeline(model_name: str, pipeline: Pipeline, params: dict[str, Any] | None = None) -> dict[str, Any]:
             scores = cross_validate(
                 pipeline,
                 X_train,
@@ -1765,15 +1801,20 @@ cells = [
     ),
 ]
 
-nb.cells = base_cells + cells
-nb.metadata["kernelspec"] = {
-    "display_name": "Python (ds-sonv-bike-regression)",
-    "language": "python",
-    "name": "python3",
-}
-nb.metadata.setdefault("language_info", {})
-nb.metadata["language_info"].update({"name": "python", "pygments_lexer": "ipython3"})
-nb.nbformat_minor = 5
+def write_notebook() -> None:
+    nb.cells = base_cells + cells
+    nb.metadata["kernelspec"] = {
+        "display_name": "Python (ds-sonv-bike-regression)",
+        "language": "python",
+        "name": "python3",
+    }
+    nb.metadata.setdefault("language_info", {})
+    nb.metadata["language_info"].update({"name": "python", "pygments_lexer": "ipython3"})
+    nb.nbformat_minor = 5
 
-nbf.write(nb, path)
-print(f"Wrote {path} with {len(nb.cells)} cells; preserved {len(base_cells)} original cells.")
+    nbf.write(nb, path)
+    print(f"Wrote {path} with {len(nb.cells)} cells; preserved {len(base_cells)} original cells.")
+
+
+if __name__ == "__main__":
+    write_notebook()

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.utils.validation import check_is_fitted
 
 
 BASE_NUMERIC_FEATURES = [
@@ -52,22 +51,33 @@ MODEL_FEATURES_AFTER_ENGINEERING = NUMERIC_WITH_ENGINEERED + CATEGORICAL_FEATURE
 class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
     """Create stable weather and time-period features for bike demand models."""
 
-    def __init__(self) -> None:
-        self.input_features_ = BASE_FEATURES
-        self.output_features_ = MODEL_FEATURES_AFTER_ENGINEERING
+    input_features = BASE_FEATURES
+    output_features = MODEL_FEATURES_AFTER_ENGINEERING
 
-    def fit(
-        self, X: pd.DataFrame, y: Optional[pd.Series] = None
-    ) -> "BikeFeatureEngineer":
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> "BikeFeatureEngineer":
+        frame = pd.DataFrame(X)
+        missing_columns = [
+            column for column in self.input_features if column not in frame.columns
+        ]
+        if missing_columns:
+            raise ValueError(f"Missing required columns: {missing_columns}")
+        self.n_features_in_ = frame.shape[1]
+        self.feature_names_in_ = np.asarray(frame.columns, dtype=object)
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        frame = pd.DataFrame(X).copy()
-        for column in self.input_features_:
-            if column not in frame.columns:
-                frame[column] = np.nan
+        check_is_fitted(self, "feature_names_in_")
 
-        for column in BASE_NUMERIC_FEATURES + TIME_FEATURES:
+        frame = pd.DataFrame(X)
+        missing_columns = [
+            column for column in self.input_features if column not in frame.columns
+        ]
+        if missing_columns:
+            raise ValueError(f"Missing required columns: {missing_columns}")
+
+        frame = frame.loc[:, self.input_features].copy()
+        numeric_columns = BASE_NUMERIC_FEATURES + TIME_FEATURES
+        for column in numeric_columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce").astype(float)
 
         for column in CATEGORICAL_FEATURES:
@@ -80,12 +90,14 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
         solar = frame["solar_radiation_mjm2"]
         rainfall = frame["rainfallmm"]
         snowfall = frame["snowfall_cm"]
+        rainfall_filled = rainfall.fillna(0)
+        snowfall_filled = snowfall.fillna(0)
 
         frame["dew_point_gap"] = temperature - dew_point
-        frame["has_rain"] = (rainfall.fillna(0) > 0).astype(float)
-        frame["has_snow"] = (snowfall.fillna(0) > 0).astype(float)
+        frame["has_rain"] = (rainfall_filled > 0).astype(float)
+        frame["has_snow"] = (snowfall_filled > 0).astype(float)
         frame["has_precipitation"] = (
-            (rainfall.fillna(0) > 0) | (snowfall.fillna(0) > 0)
+            (rainfall_filled > 0) | (snowfall_filled > 0)
         ).astype(float)
         frame["comfortable_temperature"] = temperature.between(
             12, 26, inclusive="both"
@@ -101,4 +113,4 @@ class BikeFeatureEngineer(BaseEstimator, TransformerMixin):
             frame[TIME_FEATURES].fillna(0).sum(axis=1) == 0
         ).astype(float)
 
-        return frame[self.output_features_]
+        return frame[self.output_features]
