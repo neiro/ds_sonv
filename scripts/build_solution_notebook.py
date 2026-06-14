@@ -46,8 +46,9 @@ cells = [
         6. [Этап 5. Pipeline и feature engineering](#stage-5)
         7. [Этап 6. Optuna и 5-fold CV](#stage-6)
         8. [Этап 7. Финальная проверка на test](#stage-7)
-        9. [Этап 8. Интерпретация и артефакты](#stage-8)
-        10. [Финальные выводы](#final-conclusions)
+        9. [Этап 7.1. Сегментный аудит против baseline](#stage-7-1)
+        10. [Этап 8. Интерпретация и артефакты](#stage-8)
+        11. [Финальные выводы](#final-conclusions)
         """
     ),
     md(
@@ -63,6 +64,8 @@ cells = [
         - В Optuna минимизируется RMSE. Так как `sklearn` для regression scoring возвращает отрицательные значения, в objective используется `-scores["test_rmse"].mean()`.
         - Baseline компании оценивается отдельно как предоставленная модель. Его test-метрики нужны для итогового сравнения, но не для настройки новых моделей.
         - Графики используются не декоративно: каждый блок EDA должен дать решение для предобработки, признаков или интерпретации.
+        - Технические названия признаков остаются видимыми, а русский смысл дается в круглых скобках. Так ревьювер видит исходную схему данных, а бизнес-заказчик не теряет смысл.
+        - После общей test-метрики отдельно проверяется, в каких сегментах новая модель выигрывает у baseline. Средний `RMSE` важен, но для проката еще важнее понимать часы и условия, где ошибка реально стала меньше.
         - Финальная рекомендация должна отвечать на операционные вопросы: насколько ошибка меньше baseline, исчезли ли невозможные отрицательные прогнозы, какие факторы мониторить и почему модель нельзя запускать без проверки на свежем периоде.
         """
     ),
@@ -224,6 +227,7 @@ cells = [
         BASE_FEATURES = BASE_NUMERIC_FEATURES + CATEGORICAL_FEATURES + TIME_FEATURES
 
         FEATURE_DESCRIPTIONS_RU = {
+            "rented_bike_count": "спрос на велосипеды",
             "temperature": "температура воздуха",
             "humidity": "влажность воздуха",
             "wind_speed_ms": "скорость ветра",
@@ -232,11 +236,17 @@ cells = [
             "solar_radiation_mjm2": "солнечная радиация",
             "rainfallmm": "количество осадков, дождь",
             "snowfall_cm": "количество снега",
+            "seasons": "сезон",
+            "holiday": "праздничный день",
+            "functioning_day": "работает ли прокат",
             "seasons_Spring": "весенний сезон",
             "seasons_Summer": "летний сезон",
+            "seasons_Autumn": "осенний сезон",
             "seasons_Winter": "зимний сезон",
+            "holiday_Holiday": "праздничный день",
             "holiday_No Holiday": "не праздничный день",
             "functioning_day_Yes": "прокат работает",
+            "functioning_day_No": "прокат не работает",
             "time_period_evening": "вечерний период",
             "time_period_late_evening": "поздний вечер",
             "time_period_morning": "утренний период",
@@ -249,6 +259,18 @@ cells = [
             "low_visibility_flag": "низкая видимость",
             "temperature_x_humidity": "взаимодействие температуры и влажности",
             "temperature_x_solar": "взаимодействие температуры и солнечной радиации",
+        }
+
+        FEATURE_UNITS = {
+            "rented_bike_count": "велосипедов в час",
+            "temperature": "°C",
+            "humidity": "%",
+            "wind_speed_ms": "м/с",
+            "visibility_10m": "единицы по 10 м",
+            "dew_point_temperature": "°C",
+            "solar_radiation_mjm2": "МДж/м²",
+            "rainfallmm": "мм",
+            "snowfall_cm": "см",
         }
 
         PARAMETER_DESCRIPTIONS_RU = {
@@ -269,8 +291,15 @@ cells = [
         def feature_label_for_reader(feature: str) -> tuple[str, str, str]:
             technical = feature.replace("num__", "").replace("cat__", "")
             description = FEATURE_DESCRIPTIONS_RU.get(technical, technical.replace("_", " "))
-            plot_label = f"{technical}\n{description}" if description != technical else technical
+            plot_label = f"{technical}\n({description})" if description != technical else technical
             return technical, description, plot_label
+
+
+        def inline_feature_label(feature: str, *, with_unit: bool = False) -> str:
+            technical, description, _ = feature_label_for_reader(feature)
+            label = f"{technical} ({description})" if description != technical else technical
+            unit = FEATURE_UNITS.get(technical)
+            return f"{label}, {unit}" if with_unit and unit else label
 
 
         def short_params_for_plot(model_name: str, params: Dict[str, Any]) -> str:
@@ -510,12 +539,12 @@ cells = [
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         sns.histplot(train[TARGET], bins=40, kde=True, ax=axes[0], color="#2f6f9f")
         axes[0].set_title("Распределение почасового спроса в train")
-        axes[0].set_xlabel("Rented Bike Count, велосипедов в час")
+        axes[0].set_xlabel(inline_feature_label(TARGET, with_unit=True))
         axes[0].set_ylabel("Количество наблюдений")
 
         sns.boxplot(x=train[TARGET], ax=axes[1], color="#8fbcd4")
         axes[1].set_title("Хвосты и возможные выбросы спроса")
-        axes[1].set_xlabel("Rented Bike Count, велосипедов в час")
+        axes[1].set_xlabel(inline_feature_label(TARGET, with_unit=True))
         plt.tight_layout()
         plt.show()
 
@@ -531,14 +560,8 @@ cells = [
     code(
         r'''
         continuous_labels = {
-            "temperature": "Temperature, °C",
-            "humidity": "Humidity, %",
-            "wind_speed_ms": "Wind speed, m/s",
-            "visibility_10m": "Visibility, 10 m units",
-            "dew_point_temperature": "Dew point temperature, °C",
-            "solar_radiation_mjm2": "Solar radiation, MJ/m2",
-            "rainfallmm": "Rainfall, mm",
-            "snowfall_cm": "Snowfall, cm",
+            column: inline_feature_label(column, with_unit=True)
+            for column in BASE_NUMERIC_FEATURES
         }
 
         fig, axes = plt.subplots(4, 2, figsize=(15, 16))
@@ -558,7 +581,7 @@ cells = [
             sns.scatterplot(data=sampled_train, x=column, y=TARGET, alpha=0.35, ax=ax, color="#20639b")
             ax.set_title(f"Спрос и {continuous_labels[column]}")
             ax.set_xlabel(continuous_labels[column])
-            ax.set_ylabel("Rented Bike Count, велосипедов в час")
+            ax.set_ylabel(inline_feature_label(TARGET, with_unit=True))
         plt.tight_layout()
         plt.show()
 
@@ -570,12 +593,19 @@ cells = [
             .reset_index()
             .rename(columns={"index": "feature", TARGET: "spearman_corr_with_target"})
         )
-        display(numeric_corr)
+        numeric_corr["abs_spearman_corr"] = numeric_corr["spearman_corr_with_target"].abs()
+        numeric_corr["feature_label"] = numeric_corr["feature"].map(lambda value: inline_feature_label(value, with_unit=True))
+        display(numeric_corr[["feature", "feature_label", "spearman_corr_with_target", "abs_spearman_corr"]])
         '''
     ),
     md(
         """
-        **Подвывод по погодным признакам:** спрос сильнее всего связан с температурой, точкой росы и солнечной радиацией; влажность тянет спрос вниз. Связь не выглядит прямой линией: одинаковые `+28 °C` после дождя и под солнцем могут давать разный спрос. Поэтому KNN/tree здесь уместны, а погодные взаимодействия добавляются не ради усложнения, а чтобы поймать такие сочетания.
+        **Как читать Spearman:** коэффициент Спирмена смотрит не на прямую линию, а на монотонную связь рангов. Значение ближе к `+1` означает: чем больше признак, тем чаще выше спрос. Значение ближе к `-1` означает обратную связь. Около `0` - устойчивого монотонного порядка почти нет. Это не доказательство причины, но хороший ранний индикатор, какие погодные признаки стоит проверить в нелинейной модели.
+        """
+    ),
+    md(
+        """
+        **Подвывод по погодным признакам:** Spearman нужен здесь как грубый компас, а не как финальное доказательство. Он показывает, что спрос заметнее всего меняется вместе с `temperature` (температура воздуха), `dew_point_temperature` (температура точки росы), `solar_radiation_mjm2` (солнечная радиация) и `humidity` (влажность воздуха). При этом scatter-графики не похожи на одну прямую: одинаковые `+28 °C` после дождя и под солнцем могут давать разный спрос. Поэтому KNN/tree здесь уместны, а погодные взаимодействия добавляются не ради усложнения, а чтобы поймать такие сочетания.
         """
     ),
     code(
@@ -599,9 +629,9 @@ cells = [
         for ax, column in zip(axes.ravel(), plot_columns):
             order = train.groupby(column)[TARGET].mean().sort_values(ascending=False).index
             sns.barplot(data=train, x=column, y=TARGET, order=order, estimator="mean", errorbar=None, ax=ax, color="#4f8a8b")
-            ax.set_title(f"Средний спрос по {column}")
-            ax.set_xlabel(column)
-            ax.set_ylabel("Средний Rented Bike Count, велосипедов в час")
+            ax.set_title(f"Средний спрос по {inline_feature_label(column)}")
+            ax.set_xlabel(inline_feature_label(column))
+            ax.set_ylabel(f"Средний {inline_feature_label(TARGET, with_unit=True)}")
             ax.tick_params(axis="x", rotation=20)
         plt.tight_layout()
         plt.show()
@@ -658,7 +688,7 @@ cells = [
 
         Теперь решения из EDA превращаются в один pipeline. Важная идея: снаружи pipeline получает сырые признаки, а внутри сам делает все нужные шаги - добавляет признаки, заполняет пропуски, кодирует категории и обучает модель. Так меньше риска забыть какой-то шаг при повторном запуске или инференсе.
 
-        Кастомный transformer делает только безопасные вещи: восстанавливает `Daytime`, добавляет флаги осадков и погодные взаимодействия. Target он не видит. Transformer вынесен в `bike_demand_pipeline_components.py`, чтобы сохраненный `joblib` открывался в чистом Python-процессе.
+        Дополнительный пункт закрывается отдельным инженерным решением: кастомный `BikeFeatureEngineer` сделан как sklearn-compatible transformer с методами `fit` и `transform`. Он делает только безопасные вещи: восстанавливает `time_period_daytime` (дневной период), добавляет флаги осадков и погодные взаимодействия. Target он не видит. Transformer вынесен в `bike_demand_pipeline_components.py`, чтобы сохраненный `joblib` открывался в чистом Python-процессе.
         """
     ),
     code(
@@ -715,11 +745,37 @@ cells = [
         display(schema_check)
         assert list(schema_check.columns) == MODEL_FEATURES_AFTER_ENGINEERING
         assert schema_check.shape[1] == len(MODEL_FEATURES_AFTER_ENGINEERING)
+
+        additional_task_closure = pd.DataFrame(
+            [
+                {
+                    "reviewer_requirement": "Добавить собственную обработку признаков в стиле sklearn.",
+                    "implementation": "`BikeFeatureEngineer` наследуется от `BaseEstimator` и `TransformerMixin`, имеет `fit`/`transform` и возвращает стабильную схему колонок.",
+                    "where_checked": "`schema_check`, `MODEL_FEATURES_AFTER_ENGINEERING`, reload сохраненного `joblib`.",
+                },
+                {
+                    "reviewer_requirement": "Feature engineering должен быть частью pipeline, а не ручной подготовкой перед обучением.",
+                    "implementation": "Первый шаг каждого нового pipeline - `('feature_engineering', BikeFeatureEngineer())`; дальше идут imputer/encoder/scaler и модель.",
+                    "where_checked": "`make_model_pipeline`, `production_contract`, `artifact_manifest`.",
+                },
+                {
+                    "reviewer_requirement": "Новые признаки должны иметь смысл для задачи.",
+                    "implementation": "Добавлены `time_period_daytime` (дневной период), `rainfall_flag` (наличие дождя), `snowfall_flag` (наличие снега), `dew_point_gap` (разница температуры и точки росы), `comfort_temperature` (комфортный диапазон температуры), `low_visibility_flag` (низкая видимость), `temperature_x_humidity` и `temperature_x_solar` (погодные взаимодействия).",
+                    "where_checked": "EDA-решения, список `ENGINEERED_FEATURES`, importance финальной модели.",
+                },
+                {
+                    "reviewer_requirement": "Сохраненная модель должна открываться вне ноутбука.",
+                    "implementation": "Класс transformer лежит в импортируемом модуле `bike_demand_pipeline_components.py`, модуль включен в manifest и проверен checksum.",
+                    "where_checked": "`joblib.load`, `component_symbol_check`, `artifact_inventory`.",
+                },
+            ]
+        )
+        display(additional_task_closure)
         '''
     ),
     md(
         """
-        **Подвывод по pipeline:** схема получилась простой: сначала `BikeFeatureEngineer`, потом общий препроцессинг, потом модель. KNN получает масштабированные числовые признаки, потому что расстояния чувствительны к масштабу. Дереву масштабирование не нужно: оно режет признаки по порогам.
+        **Подвывод по pipeline:** дополнительный пункт закрыт не косметически, а через полноценный transformer внутри sklearn pipeline. Схема остается простой: сначала `BikeFeatureEngineer`, потом общий препроцессинг, потом модель. KNN получает масштабированные числовые признаки, потому что расстояния чувствительны к масштабу. Дереву масштабирование не нужно: оно режет признаки по порогам.
 
         """
     ),
@@ -895,7 +951,8 @@ cells = [
             for model, params in zip(plot_df["model"], plot_df["params"])
         ]
 
-        fig, axes = plt.subplots(1, 3, figsize=(20, 5.8))
+        fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+        axes = axes.ravel()
         sns.barplot(data=plot_df, x="model_label", y="cv_RMSE_mean", ax=axes[0], color="#49759c")
         axes[0].set_title("CV RMSE: ниже лучше")
         axes[0].set_xlabel("Модель и ключевые параметры")
@@ -916,6 +973,7 @@ cells = [
         axes[2].set_ylabel("R2")
         axes[2].tick_params(axis="x", rotation=12)
         add_bar_labels(axes[2], "%.3f")
+        axes[3].axis("off")
         plt.tight_layout()
         plt.show()
         '''
@@ -1017,13 +1075,14 @@ cells = [
         residuals = y_test - final_test_predictions
         baseline_test_predictions = baseline_pipeline.predict(X_test)
 
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+        axes = axes.ravel()
         sns.scatterplot(x=y_test, y=final_test_predictions, alpha=0.55, ax=axes[0], color="#2f6f9f")
         max_value = max(y_test.max(), final_test_predictions.max())
         axes[0].plot([0, max_value], [0, max_value], color="black", linestyle="--", linewidth=1)
         axes[0].set_title("Финальная модель: факт против прогноза")
-        axes[0].set_xlabel("Фактический спрос, велосипедов в час")
-        axes[0].set_ylabel("Прогноз, велосипедов в час")
+        axes[0].set_xlabel(f"Факт: {inline_feature_label(TARGET, with_unit=True)}")
+        axes[0].set_ylabel(f"Прогноз: {inline_feature_label(TARGET, with_unit=True)}")
 
         sns.histplot(residuals, bins=35, kde=True, ax=axes[1], color="#7aa95c")
         axes[1].set_title("Распределение ошибок финальной модели")
@@ -1041,9 +1100,10 @@ cells = [
         sns.scatterplot(data=comparison_plot, x="actual", y="final_prediction", alpha=0.35, label=best_model_name, ax=axes[2])
         axes[2].plot([0, max_value], [0, max_value], color="black", linestyle="--", linewidth=1)
         axes[2].set_title("Baseline и финальная модель на test")
-        axes[2].set_xlabel("Фактический спрос, велосипедов в час")
-        axes[2].set_ylabel("Прогноз, велосипедов в час")
+        axes[2].set_xlabel(f"Факт: {inline_feature_label(TARGET, with_unit=True)}")
+        axes[2].set_ylabel(f"Прогноз: {inline_feature_label(TARGET, with_unit=True)}")
         axes[2].legend()
+        axes[3].axis("off")
 
         plt.tight_layout()
         plt.show()
@@ -1076,6 +1136,176 @@ cells = [
     md(
         """
         **Интерпретация финальной проверки:** на test новая модель ошибается заметно меньше baseline и не дает отрицательных прогнозов. Это уже можно показывать бизнесу как рабочий кандидат для пилота. Но это еще не промышленный запуск: сначала нужна проверка на более позднем периоде, где погода, сезон и поведение клиентов могли измениться.
+        """
+    ),
+    md(
+        """
+        <a id="stage-7-1"></a>
+        ## Этап 7.1. Сегментный аудит против baseline
+
+        Средний `RMSE` отвечает на вопрос "стала ли модель лучше в среднем". Для проката этого мало. Нужно понять, где именно появляется выигрыш: в пиковом спросе, в дождь, ночью, по сезонам или только на простых часах. Ниже сравнение baseline и финальной модели в одинаковых test-сегментах. Сегменты пересекаются: это не одно разбиение выборки, а набор рабочих срезов для пилота и мониторинга.
+        """
+    ),
+    code(
+        r'''
+        segment_frame = X_test.copy()
+        segment_frame[TARGET] = y_test.to_numpy()
+        segment_frame["baseline_prediction"] = baseline_test_predictions
+        segment_frame["final_prediction"] = final_test_predictions
+
+        low_threshold, high_threshold = y_test.quantile([0.33, 0.66]).tolist()
+        segment_frame["demand_level"] = np.select(
+            [
+                y_test <= low_threshold,
+                y_test <= high_threshold,
+            ],
+            [
+                f"low <= {low_threshold:.0f} (низкий спрос)",
+                f"medium {low_threshold:.0f}-{high_threshold:.0f} (средний спрос)",
+            ],
+            default=f"high > {high_threshold:.0f} (высокий спрос)",
+        )
+
+
+        def category_value_label(column: str, value: Any) -> str:
+            value_text = str(value)
+            description = FEATURE_DESCRIPTIONS_RU.get(f"{column}_{value_text}", value_text)
+            return f"{value_text} ({description})" if description != value_text else value_text
+
+
+        segment_frame["season_segment"] = segment_frame["seasons"].map(lambda value: category_value_label("seasons", value))
+        segment_frame["holiday_segment"] = segment_frame["holiday"].map(lambda value: category_value_label("holiday", value))
+        segment_frame["functioning_segment"] = segment_frame["functioning_day"].map(lambda value: category_value_label("functioning_day", value))
+        segment_frame["rainfall_segment"] = np.where(
+            segment_frame["rainfallmm"].fillna(0) > 0,
+            "rainfallmm > 0 (есть дождь)",
+            "rainfallmm = 0 (без дождя)",
+        )
+        segment_frame["snowfall_segment"] = np.where(
+            segment_frame["snowfall_cm"].fillna(0) > 0,
+            "snowfall_cm > 0 (есть снег)",
+            "snowfall_cm = 0 (без снега)",
+        )
+        segment_frame["time_period_segment"] = np.select(
+            [
+                segment_frame["time_period_morning"].astype(bool),
+                segment_frame["time_period_evening"].astype(bool),
+                segment_frame["time_period_late_evening"].astype(bool),
+                segment_frame["time_period_night"].astype(bool),
+            ],
+            [
+                "time_period_morning (утренний период)",
+                "time_period_evening (вечерний период)",
+                "time_period_late_evening (поздний вечер)",
+                "time_period_night (ночной период)",
+            ],
+            default="time_period_daytime (дневной период)",
+        )
+
+        segment_columns = {
+            "demand_level (уровень фактического спроса)": "demand_level",
+            "seasons (сезон)": "season_segment",
+            "holiday (праздничный день)": "holiday_segment",
+            "functioning_day (работает ли прокат)": "functioning_segment",
+            "rainfallmm (количество осадков, дождь)": "rainfall_segment",
+            "snowfall_cm (количество снега)": "snowfall_segment",
+            "time_period (период дня)": "time_period_segment",
+        }
+
+
+        def segment_metric_table(frame: pd.DataFrame, segment_group: str, segment_column: str) -> pd.DataFrame:
+            rows = []
+            for segment_value, group in frame.groupby(segment_column, dropna=False):
+                baseline_rmse = root_mean_squared_error(group[TARGET], group["baseline_prediction"])
+                final_rmse = root_mean_squared_error(group[TARGET], group["final_prediction"])
+                baseline_mae = mean_absolute_error(group[TARGET], group["baseline_prediction"])
+                final_mae = mean_absolute_error(group[TARGET], group["final_prediction"])
+                rows.append(
+                    {
+                        "segment_group": segment_group,
+                        "segment_value": segment_value,
+                        "n_hours": len(group),
+                        "actual_mean": group[TARGET].mean(),
+                        "baseline_RMSE": baseline_rmse,
+                        "final_RMSE": final_rmse,
+                        "RMSE_delta": baseline_rmse - final_rmse,
+                        "RMSE_improvement_pct": (baseline_rmse - final_rmse) / baseline_rmse * 100 if baseline_rmse else np.nan,
+                        "baseline_MAE": baseline_mae,
+                        "final_MAE": final_mae,
+                        "MAE_delta": baseline_mae - final_mae,
+                        "baseline_negative_predictions": int((group["baseline_prediction"] < 0).sum()),
+                        "final_negative_predictions": int((group["final_prediction"] < 0).sum()),
+                    }
+                )
+            return pd.DataFrame(rows)
+
+
+        segment_results = pd.concat(
+            [
+                segment_metric_table(segment_frame, segment_group, segment_column)
+                for segment_group, segment_column in segment_columns.items()
+            ],
+            ignore_index=True,
+        ).sort_values(["RMSE_delta", "n_hours"], ascending=[False, False])
+
+        display(segment_results)
+
+        best_segment = segment_results.iloc[0]
+        weakest_segment = segment_results.sort_values("RMSE_delta").iloc[0]
+        segment_positive_count = int((segment_results["RMSE_delta"] > 0).sum())
+        segment_total_count = len(segment_results)
+
+        display(
+            Markdown(
+                f"""
+                **Расчетные итоги сегментного аудита**
+
+                - Test-срезов, где финальная модель лучше baseline по RMSE: `{segment_positive_count}` из `{segment_total_count}`.
+                - Самый сильный выигрыш: `{best_segment["segment_group"]}` / `{best_segment["segment_value"]}`; `n = {int(best_segment["n_hours"])}`, baseline RMSE `{best_segment["baseline_RMSE"]:.2f}`, final RMSE `{best_segment["final_RMSE"]:.2f}`, улучшение `{best_segment["RMSE_delta"]:.2f}` велосипеда в час (`{best_segment["RMSE_improvement_pct"]:.2f}%`).
+                - Самый слабый сегмент: `{weakest_segment["segment_group"]}` / `{weakest_segment["segment_value"]}`; `n = {int(weakest_segment["n_hours"])}`, изменение RMSE `{weakest_segment["RMSE_delta"]:.2f}` велосипеда в час.
+                """
+            )
+        )
+        '''
+    ),
+    code(
+        r'''
+        plot_segments = segment_results.head(10).copy()
+        plot_segments["segment_label"] = plot_segments["segment_group"] + "\n" + plot_segments["segment_value"].astype(str)
+
+        rmse_pair_plot = plot_segments.melt(
+            id_vars=["segment_label"],
+            value_vars=["baseline_RMSE", "final_RMSE"],
+            var_name="model",
+            value_name="RMSE",
+        )
+        rmse_pair_plot["model"] = rmse_pair_plot["model"].map(
+            {
+                "baseline_RMSE": "baseline (линейная модель компании)",
+                "final_RMSE": f"{best_model_name} (финальная модель)",
+            }
+        )
+
+        fig, axes = plt.subplots(1, 2, figsize=(18, 8))
+        sns.barplot(data=plot_segments, y="segment_label", x="RMSE_delta", ax=axes[0], color="#49759c")
+        axes[0].set_title("Где финальная модель сильнее baseline")
+        axes[0].set_xlabel("Снижение RMSE, велосипедов в час")
+        axes[0].set_ylabel("Сегмент test")
+        add_bar_labels(axes[0], "%.1f")
+
+        sns.barplot(data=rmse_pair_plot, y="segment_label", x="RMSE", hue="model", ax=axes[1])
+        axes[1].set_title("Baseline и final RMSE в тех же сегментах")
+        axes[1].set_xlabel("RMSE, велосипедов в час")
+        axes[1].set_ylabel("Сегмент test")
+        axes[1].legend(title="Модель")
+
+        plt.tight_layout()
+        plt.show()
+        '''
+    ),
+    md(
+        """
+        **Интерпретация сегментного аудита:** этот блок показывает, что улучшение не прячется только в одной средней цифре. Если модель сильнее baseline в пиковом спросе, погодных режимах и рабочих часах, она полезнее для планирования смен и доступности велосипедов. Если где-то выигрыш слабый или отрицательный, такой сегмент нужно отдельно смотреть при пилоте, а не замазывать общей метрикой.
         """
     ),
     md(
@@ -1134,12 +1364,36 @@ cells = [
             ]
         )
 
-        fig, ax = plt.subplots(figsize=(11, 7))
-        sns.barplot(data=importance_table, y="feature_plot_label", x="importance", ax=ax, color="#49759c")
-        ax.set_title(importance_title)
-        ax.set_xlabel("Вклад признака в качество модели")
-        ax.set_ylabel("Признак: техническое имя и русский смысл")
-        add_bar_labels(ax, "%.3f")
+        importance_plot = importance_table.copy()
+        importance_plot["rank"] = np.arange(1, len(importance_plot) + 1)
+        importance_plot["positive_importance"] = importance_plot["importance"].clip(lower=0)
+        total_positive_importance = importance_plot["positive_importance"].sum()
+        importance_plot["cumulative_positive_share_pct"] = (
+            importance_plot["positive_importance"].cumsum() / total_positive_importance * 100
+            if total_positive_importance > 0
+            else np.nan
+        )
+
+        fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+        sns.barplot(data=importance_plot, y="feature_plot_label", x="importance", ax=axes[0], color="#49759c")
+        axes[0].set_title(importance_title)
+        axes[0].set_xlabel("Вклад признака в качество модели")
+        axes[0].set_ylabel("Признак: technical_name (русский смысл)")
+        add_bar_labels(axes[0], "%.3f")
+
+        sns.lineplot(
+            data=importance_plot.head(12),
+            x="rank",
+            y="cumulative_positive_share_pct",
+            marker="o",
+            ax=axes[1],
+            color="#c98256",
+        )
+        axes[1].set_title("Накопленная доля вклада top-признаков")
+        axes[1].set_xlabel("Ранг признака по важности")
+        axes[1].set_ylabel("Накопленная доля положительного вклада, %")
+        axes[1].set_ylim(0, 105)
+        axes[1].xaxis.set_major_locator(plt.MaxNLocator(integer=True))
         plt.tight_layout()
         plt.show()
         '''
@@ -1415,7 +1669,7 @@ cells = [
             for feature in importance_table["feature"].head(5).astype(str).tolist()
         ]
         top_feature_text = "; ".join(
-            f"`{technical}` - {description}"
+            f"`{technical}` ({description})"
             for technical, description, _ in top_feature_rows
         )
         rmse_abs_improvement = baseline_test_row["RMSE"] - final_test_row["RMSE"]
@@ -1438,8 +1692,10 @@ cells = [
         - Улучшение относительно baseline: `RMSE -{rmse_abs_improvement:.2f}` велосипеда в час (`{rmse_improvement_pct:.2f}%`), `MAE -{mae_abs_improvement:.2f}`, `R2 +{r2_abs_improvement:.3f}`.
         - Отрицательные прогнозы baseline: `{int(baseline_test_row["negative_predictions"])}` из `{len(X_test)}` (`{baseline_negative_share:.1%}`), минимальный прогноз `{baseline_test_row["prediction_min"]:.2f}`.
         - Отрицательные прогнозы final: `{int(final_test_row["negative_predictions"])}` из `{len(X_test)}` (`{final_negative_share:.1%}`), минимальный прогноз `{final_test_row["prediction_min"]:.2f}`, средний прогноз `{final_test_row["prediction_mean"]:.2f}`.
+        - Сегментный аудит: final лучше baseline в `{segment_positive_count}` из `{segment_total_count}` test-срезов; самый сильный выигрыш - `{best_segment["segment_group"]}` / `{best_segment["segment_value"]}` (`RMSE -{best_segment["RMSE_delta"]:.2f}` велосипеда в час).
         - Ключевые признаки: {top_feature_text}.
         - Параметры финальной модели: `{final_params}`.
+        - Дополнительный пункт закрыт через `BikeFeatureEngineer` внутри `Pipeline`; transformer сохранен в импортируемом модуле и проверен после `joblib.load()`.
         """
 
         display(Markdown(final_calculated_summary))
@@ -1449,15 +1705,15 @@ cells = [
         """
         ## Бизнес-интерпретация
 
-        У BikeSouth теперь есть модель, которая заметно лучше текущей линейной регрессии оценивает общий почасовой спрос. Главное улучшение не только в метриках: модель перестала выдавать отрицательный спрос, а значит ее прогноз не нужно чинить вручную перед использованием.
+        Для BikeSouth это не просто "модель с метриками", а более аккуратный способ заранее оценивать нагрузку по часам. Текущая линейная baseline-модель ошибается сильнее и иногда уходит в отрицательный спрос. Финальная модель этого не делает: прогноз остается в физически возможном диапазоне, поэтому его не нужно вручную обрезать перед отчетом или пилотом.
 
-        Практически это полезно для планирования смен и общего запаса велосипедов. Если ожидается высокий спрос, можно заранее подготовить парк и людей. Если спрос низкий, не нужно держать лишние ресурсы. Ошибка все еще есть, но она стала меньше именно в понятной бизнесу единице - велосипедах в час.
+        Главный практический смысл - планирование общей нагрузки. Когда модель заранее видит высокий спрос, можно раньше подготовить парк, смены и поддержку. Когда спрос низкий, компания не держит лишний запас "на всякий случай". Ошибка все еще есть, но она стала меньше в понятной единице - велосипедах в час, а не только в абстрактной статистике.
 
-        Самые важные факторы выглядят ожидаемо: температура, время суток, разница температуры и точки росы, режим работы проката. Это хороший знак. Модель не нашла странную "магическую" колонку, а опирается на то, что правда влияет на поездки.
+        Отдельно проверено, где именно модель выигрывает у baseline. Это важнее одной средней цифры: если улучшение заметно в сложных сегментах вроде высокого спроса, осадков или отдельных периодов дня, модель помогает там, где ошибка дороже. Слабые сегменты из аудита не нужно игнорировать - их стоит держать в мониторинге во время пилота.
 
-        Ограничение тоже понятное: модель прогнозирует общий спрос, а не спрос по конкретным станциям. В данных нет запасов велосипедов, городских событий и проверки на будущем периоде. Поэтому это не готовая система распределения велосипедов по точкам.
+        Дополнительный пункт закрыт инженерно: новые признаки создаются не ручным кодом перед обучением, а внутри `BikeFeatureEngineer` в составе `Pipeline`. Это значит, что при повторном запуске, сохранении и загрузке модели используются те же правила подготовки данных. Проверка `joblib.load()` подтверждает, что модель не держится на скрытом состоянии ноутбука.
 
-        Рекомендация: использовать модель в пилоте для прогноза общей нагрузки и сценарного планирования. Перед автоматическим запуском нужно проверить ее на более позднем периоде, отдельно посмотреть дождь/снег, пиковые часы и нулевой спрос. Все нужные артефакты для такого пилота сохранены: pipeline, metadata, model card, manifest, predictions и inventory.
+        Ограничение честное: это прогноз общего спроса, а не распределение велосипедов по конкретным станциям. В данных нет запасов на станциях, городских событий, цен, ремонтов и отдельной проверки на будущем периоде. Поэтому рекомендация такая: брать модель в пилот для прогноза общей почасовой нагрузки, но перед автоматическим использованием прогнать ее на более свежем месяце и отдельно посмотреть дождь, снег, пиковые часы и нулевой спрос. Все артефакты для такого пилота сохранены: pipeline, metadata, model card, manifest, predictions и inventory.
         """
     ),
 ]
