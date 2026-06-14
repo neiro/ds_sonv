@@ -513,7 +513,13 @@ cells = [
         <a id="stage-4"></a>
         ## Этап 4. Первичный аудит и EDA
 
-        EDA здесь не для украшения. Каждый график должен ответить на практический вопрос: что делать с пропусками, какие признаки кодировать, где ждать нелинейность и какие факторы потом объяснять заказчику.
+        EDA здесь не для украшения. Каждый график должен ответить на практический вопрос и перейти в решение для pipeline:
+
+        - Распределение target показывает, есть ли пики спроса и можно ли считать их ошибками. Здесь это реальные пиковые часы, поэтому target не чистится механически, а основной метрикой остается `RMSE`.
+        - Распределения погодных признаков показывают масштабы, хвосты и пропуски. Из этого следует медианное заполнение внутри pipeline и масштабирование для KNN.
+        - Scatter-графики `feature -> target` нужны, чтобы увидеть форму связи. Если связь не похожа на прямую, одной линейной модели мало; поэтому дальше проверяются KNN и дерево.
+        - Spearman heatmap показывает ранговые связи: отдельно с target и между самими погодными признаками. Это помогает понять, какие признаки дают похожий сигнал и где стоит ожидать погодные взаимодействия.
+        - Графики по категориям и time-period признакам нужны для бизнес-смысла: режим работы, сезон и время дня меняют сценарий спроса, а скрытый `Daytime` нужно восстановить как отдельный признак.
         """
     ),
     code(
@@ -627,9 +633,15 @@ cells = [
         plt.tight_layout(rect=(0.03, 0, 1, 1))
         plt.show()
 
+        spearman_features = BASE_NUMERIC_FEATURES + [TARGET]
+        spearman_matrix = train[spearman_features].corr(method="spearman", numeric_only=True)
+        spearman_plot_labels = {
+            feature: wrap_plot_label(inline_feature_label(feature), width=20)
+            for feature in spearman_features
+        }
+
         numeric_corr = (
-            train[BASE_NUMERIC_FEATURES + [TARGET]]
-            .corr(method="spearman", numeric_only=True)[TARGET]
+            spearman_matrix[TARGET]
             .drop(TARGET)
             .sort_values(key=lambda values: values.abs(), ascending=False)
             .reset_index()
@@ -637,12 +649,58 @@ cells = [
         )
         numeric_corr["abs_spearman_corr"] = numeric_corr["spearman_corr_with_target"].abs()
         numeric_corr["feature_label"] = numeric_corr["feature"].map(lambda value: inline_feature_label(value, with_unit=True))
+
+        fig, axes = plt.subplots(
+            1,
+            2,
+            figsize=(18, 7.5),
+            gridspec_kw={"width_ratios": [1.25, 1]},
+        )
+        sns.heatmap(
+            spearman_matrix.rename(index=spearman_plot_labels, columns=spearman_plot_labels),
+            cmap="vlag",
+            center=0,
+            vmin=-1,
+            vmax=1,
+            annot=True,
+            fmt=".2f",
+            linewidths=0.5,
+            cbar_kws={"label": "Spearman rho"},
+            ax=axes[0],
+        )
+        axes[0].set_title("Spearman heatmap: числовые признаки и target")
+        axes[0].tick_params(axis="x", rotation=45, labelsize=8)
+        axes[0].tick_params(axis="y", rotation=0, labelsize=8)
+
+        target_corr_plot = numeric_corr.sort_values("spearman_corr_with_target").copy()
+        target_corr_plot["feature_plot_label"] = target_corr_plot["feature"].map(
+            lambda value: wrap_plot_label(inline_feature_label(value), width=30)
+        )
+        bar_colors = np.where(
+            target_corr_plot["spearman_corr_with_target"] >= 0,
+            "#49759c",
+            "#c98256",
+        )
+        axes[1].barh(
+            target_corr_plot["feature_plot_label"],
+            target_corr_plot["spearman_corr_with_target"],
+            color=bar_colors,
+        )
+        axes[1].axvline(0, color="black", linewidth=1)
+        axes[1].set_title("Связь признаков с rented_bike_count (спрос)")
+        axes[1].set_xlabel("Spearman rho")
+        axes[1].set_ylabel("")
+        axes[1].set_xlim(-1, 1)
+        axes[1].bar_label(axes[1].containers[0], fmt="%.2f", padding=3, fontsize=9)
+        plt.tight_layout()
+        plt.show()
+
         display(numeric_corr[["feature", "feature_label", "spearman_corr_with_target", "abs_spearman_corr"]])
         '''
     ),
     md(
         """
-        **Как читать Spearman:** коэффициент Спирмена смотрит не на прямую линию, а на монотонную связь рангов. Значение ближе к `+1` означает: чем больше признак, тем чаще выше спрос. Значение ближе к `-1` означает обратную связь. Около `0` - устойчивого монотонного порядка почти нет. Это не доказательство причины, но хороший ранний индикатор, какие погодные признаки стоит проверить в нелинейной модели.
+        **Как читать Spearman:** коэффициент Спирмена смотрит не на прямую линию, а на монотонную связь рангов. Значение ближе к `+1` означает: чем больше признак, тем чаще выше спрос. Значение ближе к `-1` означает обратную связь. Около `0` - устойчивого монотонного порядка почти нет. Heatmap нужна, чтобы увидеть не только связь каждого признака с target, но и сильные связи между погодными признаками: например, температура и точка росы могут нести похожий сигнал. Это не доказательство причины, но хороший ранний индикатор, какие погодные признаки стоит проверить в нелинейной модели.
         """
     ),
     md(
