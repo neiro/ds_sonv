@@ -86,6 +86,7 @@ cells = [
         import json
         import platform
         import sys
+        import textwrap
         import time
         import warnings
         from pathlib import Path
@@ -300,6 +301,10 @@ cells = [
             label = f"{technical} ({description})" if description != technical else technical
             unit = FEATURE_UNITS.get(technical)
             return f"{label}, {unit}" if with_unit and unit else label
+
+
+        def wrap_plot_label(label: Any, width: int = 34) -> str:
+            return "\n".join(textwrap.wrap(str(label), width=width, break_long_words=False))
 
 
         def short_params_for_plot(model_name: str, params: Dict[str, Any]) -> str:
@@ -539,12 +544,12 @@ cells = [
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         sns.histplot(train[TARGET], bins=40, kde=True, ax=axes[0], color="#2f6f9f")
         axes[0].set_title("Распределение почасового спроса в train")
-        axes[0].set_xlabel(inline_feature_label(TARGET, with_unit=True))
+        axes[0].set_xlabel("rented_bike_count (спрос), велосипедов/час")
         axes[0].set_ylabel("Количество наблюдений")
 
         sns.boxplot(x=train[TARGET], ax=axes[1], color="#8fbcd4")
         axes[1].set_title("Хвосты и возможные выбросы спроса")
-        axes[1].set_xlabel(inline_feature_label(TARGET, with_unit=True))
+        axes[1].set_xlabel("rented_bike_count (спрос), велосипедов/час")
         plt.tight_layout()
         plt.show()
 
@@ -566,23 +571,24 @@ cells = [
 
         fig, axes = plt.subplots(4, 2, figsize=(15, 16))
         axes = axes.ravel()
-        for ax, column in zip(axes, BASE_NUMERIC_FEATURES):
+        for index, (ax, column) in enumerate(zip(axes, BASE_NUMERIC_FEATURES)):
             sns.histplot(train[column], bins=35, kde=True, ax=ax, color="#477998")
-            ax.set_title(f"Распределение: {continuous_labels[column]}")
-            ax.set_xlabel(continuous_labels[column])
-            ax.set_ylabel("Количество наблюдений")
+            ax.set_title(f"Распределение: {wrap_plot_label(continuous_labels[column], width=32)}")
+            ax.set_xlabel(wrap_plot_label(continuous_labels[column], width=30))
+            ax.set_ylabel("Количество наблюдений" if index % 2 == 0 else "")
         plt.tight_layout()
         plt.show()
 
         fig, axes = plt.subplots(4, 2, figsize=(15, 16))
         axes = axes.ravel()
         sampled_train = train.sample(min(2500, len(train)), random_state=RANDOM_STATE)
-        for ax, column in zip(axes, BASE_NUMERIC_FEATURES):
+        for index, (ax, column) in enumerate(zip(axes, BASE_NUMERIC_FEATURES)):
             sns.scatterplot(data=sampled_train, x=column, y=TARGET, alpha=0.35, ax=ax, color="#20639b")
-            ax.set_title(f"Спрос и {continuous_labels[column]}")
-            ax.set_xlabel(continuous_labels[column])
-            ax.set_ylabel(inline_feature_label(TARGET, with_unit=True))
-        plt.tight_layout()
+            ax.set_title(f"Спрос и {wrap_plot_label(continuous_labels[column], width=32)}")
+            ax.set_xlabel(wrap_plot_label(continuous_labels[column], width=30))
+            ax.set_ylabel("")
+        fig.supylabel("rented_bike_count (спрос), велосипедов/час", x=0.01, fontsize=11)
+        plt.tight_layout(rect=(0.03, 0, 1, 1))
         plt.show()
 
         numeric_corr = (
@@ -629,11 +635,12 @@ cells = [
         for ax, column in zip(axes.ravel(), plot_columns):
             order = train.groupby(column)[TARGET].mean().sort_values(ascending=False).index
             sns.barplot(data=train, x=column, y=TARGET, order=order, estimator="mean", errorbar=None, ax=ax, color="#4f8a8b")
-            ax.set_title(f"Средний спрос по {inline_feature_label(column)}")
-            ax.set_xlabel(inline_feature_label(column))
-            ax.set_ylabel(f"Средний {inline_feature_label(TARGET, with_unit=True)}")
+            ax.set_title(f"Средний спрос по {wrap_plot_label(inline_feature_label(column), width=32)}")
+            ax.set_xlabel("")
+            ax.set_ylabel("")
             ax.tick_params(axis="x", rotation=20)
-        plt.tight_layout()
+        fig.supylabel("Средний спрос, велосипедов/час", x=0.01, fontsize=11)
+        plt.tight_layout(rect=(0.03, 0, 1, 1))
         plt.show()
         '''
     ),
@@ -1105,8 +1112,8 @@ cells = [
         max_value = max(y_test.max(), final_test_predictions.max())
         axes[0].plot([0, max_value], [0, max_value], color="black", linestyle="--", linewidth=1)
         axes[0].set_title("Финальная модель: факт против прогноза")
-        axes[0].set_xlabel(f"Факт: {inline_feature_label(TARGET, with_unit=True)}")
-        axes[0].set_ylabel(f"Прогноз: {inline_feature_label(TARGET, with_unit=True)}")
+        axes[0].set_xlabel("Факт, велосипедов/час")
+        axes[0].set_ylabel("Прогноз, велосипедов/час")
 
         sns.histplot(residuals, bins=35, kde=True, ax=axes[1], color="#7aa95c")
         axes[1].set_title("Распределение ошибок финальной модели")
@@ -1124,8 +1131,8 @@ cells = [
         sns.scatterplot(data=comparison_plot, x="actual", y="final_prediction", alpha=0.35, label=best_model_name, ax=axes[2])
         axes[2].plot([0, max_value], [0, max_value], color="black", linestyle="--", linewidth=1)
         axes[2].set_title("Baseline и финальная модель на test")
-        axes[2].set_xlabel(f"Факт: {inline_feature_label(TARGET, with_unit=True)}")
-        axes[2].set_ylabel(f"Прогноз: {inline_feature_label(TARGET, with_unit=True)}")
+        axes[2].set_xlabel("Факт, велосипедов/час")
+        axes[2].set_ylabel("Прогноз, велосипедов/час")
         axes[2].legend()
         axes[3].axis("off")
 
@@ -1295,7 +1302,19 @@ cells = [
     code(
         r'''
         plot_segments = segment_results.head(10).copy()
-        plot_segments["segment_label"] = plot_segments["segment_group"] + "\n" + plot_segments["segment_value"].astype(str)
+        segment_group_short_labels = {
+            "demand_level (уровень фактического спроса)": "Уровень спроса",
+            "seasons (сезон)": "Сезон",
+            "holiday (праздничный день)": "Праздник",
+            "functioning_day (работает ли прокат)": "Режим работы",
+            "rainfallmm (количество осадков, дождь)": "Дождь",
+            "snowfall_cm (количество снега)": "Снег",
+            "time_period (период дня)": "Период дня",
+        }
+        plot_segments["segment_label"] = [
+            wrap_plot_label(f"{segment_group_short_labels.get(group, group)}: {value}", width=38)
+            for group, value in zip(plot_segments["segment_group"], plot_segments["segment_value"])
+        ]
 
         rmse_pair_plot = plot_segments.melt(
             id_vars=["segment_label"],
@@ -1314,13 +1333,14 @@ cells = [
         sns.barplot(data=plot_segments, y="segment_label", x="RMSE_delta", ax=axes[0], color="#49759c")
         axes[0].set_title("Где финальная модель сильнее baseline")
         axes[0].set_xlabel("Снижение RMSE, велосипедов в час")
-        axes[0].set_ylabel("Сегмент test")
+        axes[0].set_ylabel("")
         add_bar_labels(axes[0], "%.1f")
 
         sns.barplot(data=rmse_pair_plot, y="segment_label", x="RMSE", hue="model", ax=axes[1])
         axes[1].set_title("Baseline и final RMSE в тех же сегментах")
         axes[1].set_xlabel("RMSE, велосипедов в час")
-        axes[1].set_ylabel("Сегмент test")
+        axes[1].set_ylabel("")
+        axes[1].tick_params(axis="y", labelleft=False)
         axes[1].legend(title="Модель")
 
         plt.tight_layout()
@@ -1389,6 +1409,9 @@ cells = [
         )
 
         importance_plot = importance_table.copy()
+        importance_plot["feature_plot_label_wrapped"] = importance_plot["feature_plot_label"].map(
+            lambda label: wrap_plot_label(label, width=34)
+        )
         importance_plot["rank"] = np.arange(1, len(importance_plot) + 1)
         importance_plot["positive_importance"] = importance_plot["importance"].clip(lower=0)
         total_positive_importance = importance_plot["positive_importance"].sum()
@@ -1399,10 +1422,10 @@ cells = [
         )
 
         fig, axes = plt.subplots(1, 2, figsize=(18, 7))
-        sns.barplot(data=importance_plot, y="feature_plot_label", x="importance", ax=axes[0], color="#49759c")
+        sns.barplot(data=importance_plot, y="feature_plot_label_wrapped", x="importance", ax=axes[0], color="#49759c")
         axes[0].set_title(importance_title)
         axes[0].set_xlabel("Вклад признака в качество модели")
-        axes[0].set_ylabel("Признак: technical_name (русский смысл)")
+        axes[0].set_ylabel("")
         add_bar_labels(axes[0], "%.3f")
 
         sns.lineplot(
